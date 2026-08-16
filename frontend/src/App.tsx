@@ -564,7 +564,7 @@ function LiteraturePage({ sessionId, session, onWhy }: { sessionId: string; sess
             </div>
             <div style={{ padding: 10, background: 'var(--bg-tertiary)', borderRadius: 'var(--radius-sm)' }}>
               <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>OPEN ACCESS</div>
-              <div style={{ marginTop: 4 }}><span className="badge badge-green">{selectedPaper.open_access ? 'Open Access' : 'Verified Metadata'}</span></div>
+              <div style={{ marginTop: 4 }}><span className="badge badge-green">{selectedPaper.open_access ? 'Open Access' : 'Metadata Available'}</span></div>
             </div>
           </div>
         </div>

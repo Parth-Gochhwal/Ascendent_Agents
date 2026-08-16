@@ -20,7 +20,7 @@ from backend.app.models.research import (
     Author, SearchResult, WhyExplanation, WhyEvidenceChainItem, TimelineMilestone, new_id,
     ClaimList, ConsensusList, GapList, MissingExperimentList
 )
-from backend.app.providers.llm_provider import get_llm_provider
+from backend.app.providers.llm_provider import get_llm_provider, reset_llm_provider
 from backend.app.providers.academic import (
     OpenAlexProvider, SemanticScholarProvider, CrossrefProvider, ArxivProvider
 )
@@ -44,6 +44,7 @@ class ResearchPipeline:
     def reinitialize(self):
         """Rebuild provider layers from current config while preserving active sessions."""
         self.settings = get_settings()
+        reset_llm_provider()
         self.llm = get_llm_provider()
         
         # Reinitialize academic providers if live
@@ -254,7 +255,7 @@ class ResearchPipeline:
         session.audit = get_demo_audit()
         await self._emit_event(session, "Integrity Auditor", AgentStatus.COMPLETED,
                                f"Claims checked: {session.audit.total_claims}, "
-                               f"With evidence: {session.audit.claims_with_evidence}, "
+                               f"With evidence: {session.audit.claims_with_evidence_links}, "
                                f"Integrity: {session.audit.overall_integrity}")
 
         # Done
@@ -744,8 +745,8 @@ class ResearchPipeline:
             gap=f"{gap.title}: {gap.description}",
             context=context,
             methods=methods or "Various deep learning methods",
-            datasets=datasets or "Various battery datasets",
-            metrics=metrics or "RMSE, MAE, MAPE"
+            datasets=datasets or "No dataset metadata extracted",
+            metrics=metrics or "No evaluation metrics extracted"
         )
 
         result = await self.llm.structured_generate(prompt, ExperimentProposal, system_prompt=SYSTEM_PROMPT)
@@ -815,20 +816,20 @@ class ResearchPipeline:
             evidence_chain = [
                 WhyEvidenceChainItem(
                     claim=item.claim_a_text,
-                    evidence=f"Reported in {item.paper_a_summary}",
+                    evidence=f"Reported in {paper_a.title if paper_a else item.paper_a_summary}",
                     source_paper_id=item.paper_a_id,
                     source_paper_title=paper_a.title if paper_a else item.paper_a_summary,
                     doi_or_url=paper_a.doi or paper_a.url if paper_a else None,
-                    source_location="Results section",
+                    source_location="Extracted claim/evidence",
                     confidence=item.confidence,
                 ),
                 WhyEvidenceChainItem(
                     claim=item.claim_b_text,
-                    evidence=f"Reported in {item.paper_b_summary}",
+                    evidence=f"Reported in {paper_b.title if paper_b else item.paper_b_summary}",
                     source_paper_id=item.paper_b_id,
                     source_paper_title=paper_b.title if paper_b else item.paper_b_summary,
                     doi_or_url=paper_b.doi or paper_b.url if paper_b else None,
-                    source_location="Results section",
+                    source_location="Extracted claim/evidence",
                     confidence=item.confidence,
                 )
             ]
@@ -925,7 +926,7 @@ class ResearchPipeline:
                 evidence_chain=[
                     WhyEvidenceChainItem(
                         claim="Paper relevance & research score computation",
-                        evidence=f"Research Score: {p.research_score:.2f} (Relevance: {comps.get('relevance', 0):.2f}, Recency: {comps.get('recency', 0):.2f}, Citations: {comps.get('citation_influence', 0):.2f}, Completeness: {comps.get('completeness', 0):.2f})",
+                        evidence=f"Research Score: {p.research_score:.2f} (Relevance: {comps.get('relevance', 0):.2f}, Recency: {comps.get('recency', 0):.2f}, Citations: {comps.get('citation_influence', 0):.2f}, Completeness: {comps.get('completeness', 0):.2f})" if p.research_score is not None else "Not Evaluated",
                         source_paper_id=p.id,
                         source_paper_title=p.title,
                         doi_or_url=p.doi or p.url,
@@ -933,7 +934,7 @@ class ResearchPipeline:
                     )
                 ],
                 reasoning_factors=[
-                    f"Semantic keyword alignment with research query: {comps.get('relevance', 0)*100:.0f}%",
+                    f"Deterministic relevance alignment with research query: {comps.get('relevance', 0)*100:.0f}%",
                     f"Publication recency weight ({p.year}): {comps.get('recency', 0)*100:.0f}%",
                     f"Citation impact ({p.citation_count or 0} citations): {comps.get('citation_influence', 0)*100:.0f}%",
                     f"Methodological completeness: {comps.get('completeness', 0)*100:.0f}%"
@@ -986,7 +987,7 @@ class ResearchPipeline:
         # Group papers by year
         year_to_papers: dict[int, list[Paper]] = {}
         for p in session.papers.values():
-            y = p.year or 2024
+            y = p.year or 0
             year_to_papers.setdefault(y, []).append(p)
 
         is_battery_demo = self.settings.demo_mode and any(k in session.question.lower() for k in ["battery", "rul", "degradation", "lithium"])
@@ -1054,6 +1055,7 @@ class ResearchPipeline:
         milestones = []
         for i, year in enumerate(sorted_years):
             papers = year_to_papers[year]
+            display_year = year if year != 0 else "Unknown"
             
             # Extract methods used in this year
             methods_this_year = set()
@@ -1064,8 +1066,8 @@ class ResearchPipeline:
                         
             key_methods = list(methods_this_year)[:3]
             
-            paradigm = f"Methodological Focus {year}"
-            title = f"Research Developments in {year}"
+            paradigm = f"Methodological Focus {display_year}"
+            title = f"Research Developments in {display_year}"
             if key_methods:
                 desc = f"Key publications focused on exploring methodologies including: {', '.join(key_methods)}."
             else:
@@ -1073,7 +1075,7 @@ class ResearchPipeline:
                 
             milestones.append(
                 TimelineMilestone(
-                    year=year,
+                    year=display_year,
                     paradigm=paradigm,
                     title=title,
                     description=desc,
@@ -1198,7 +1200,7 @@ class ResearchPipeline:
             entries = []
             for i, p in enumerate(papers):
                 first_author = p.authors[0].name.split()[-1].lower() if p.authors else "author"
-                year = p.year or 2024
+                year = p.year or "n.d."
                 cite_key = f"{first_author}{year}_{p.id[:4]}"
                 authors_str = " and ".join(a.name for a in p.authors) if p.authors else "Unknown"
                 entry = (

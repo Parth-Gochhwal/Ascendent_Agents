@@ -68,7 +68,7 @@ async def main():
     print(f"   - Red team adjudication: '{curr.red_team.adjudication[:50]}...'")
     
     assert curr.audit is not None, "Integrity audit should exist"
-    print(f"   - Integrity audit: {curr.audit.overall_integrity.upper()} (Verified {curr.audit.claims_with_evidence}/{curr.audit.total_claims} claims)")
+    print(f"   - Integrity audit: {curr.audit.overall_integrity.upper()} (Claims with evidence links: {curr.audit.claims_with_evidence_links}/{curr.audit.total_claims})")
 
     # Verify 'Why?' Explainability
     print("4. Verifying 'Why?' Explainability Engine:")

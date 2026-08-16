@@ -342,7 +342,7 @@ def _build_dossier(session) -> str:
     if session.audit:
         lines.append("## 8. Research Integrity Audit\n")
         lines.append(f"- Claims checked: {session.audit.total_claims}")
-        lines.append(f"- Claims with evidence: {session.audit.claims_with_evidence}")
+        lines.append(f"- Claims with evidence: {session.audit.claims_with_evidence_links}")
         lines.append(f"- Unsupported claims: {session.audit.unsupported_claims}")
         lines.append(f"- Overall integrity: **{session.audit.overall_integrity}**\n")
 

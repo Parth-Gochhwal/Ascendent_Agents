@@ -226,16 +226,22 @@ class DemoLLMProvider(LLMProvider):
 
 _provider: Optional[LLMProvider] = None
 
+def reset_llm_provider():
+    """Invalidate the LLM provider singleton to force re-evaluation of settings."""
+    global _provider
+    _provider = None
 
 def get_llm_provider() -> LLMProvider:
     """Get the LLM provider singleton."""
     global _provider
     if _provider is None:
         settings = get_settings()
-        if settings.demo_mode and not settings.gemini_api_key:
+        if settings.demo_mode:
             _provider = DemoLLMProvider()
             logger.info("Using Demo LLM Provider")
         else:
+            if not settings.gemini_api_key:
+                logger.warning("Live mode active but no Gemini API key found!")
             _provider = GeminiProvider()
             logger.info("Using Gemini LLM Provider")
     return _provider

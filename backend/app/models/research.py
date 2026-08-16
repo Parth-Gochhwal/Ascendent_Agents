@@ -448,7 +448,7 @@ class WhyExplanation(BaseModel):
 
 class TimelineMilestone(BaseModel):
     """Longitudinal milestone in the research landscape."""
-    year: int
+    year: int | str
     paradigm: str
     title: str
     description: str

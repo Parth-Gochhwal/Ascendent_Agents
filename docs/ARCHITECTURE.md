@@ -46,7 +46,7 @@ graph TD
         Contra --> LLM
         GapEngine --> LLM
         
-        Pipeline --> Storage[(SQLite / Persistent Sessions)]
+        Pipeline --> Storage[(Ephemeral / In-Memory Sessions)]
         Pipeline --> DemoData[(Seeded Synthetic Corpus)]
     end
 ```
@@ -57,7 +57,7 @@ graph TD
 
 ### 2.1 Provider Abstraction Layer (`backend/app/providers/`)
 - **LLMProvider**:
-  - `GeminiProvider`: Direct integration with Google GenAI SDK (`google-genai`), structured output schema enforcement via Pydantic JSON schemas, multi-tier retry with exponential backoff, SHA-256 request caching (`LLMCache`), and token bucket rate-limiting (`RateLimiter`).
+  - `GeminiProvider`: Direct integration with Google GenAI SDK (`google-genai`), structured output schema enforcement via Pydantic JSON schemas, multi-tier retry with exponential backoff, SHA-256 request caching (`LLMCache`), and sliding-window rate-limiting (`RateLimiter`).
   - `DemoLLMProvider`: Deterministic fallbacks for zero-key local demo environments.
 - **AcademicSearchProvider**:
   - `OpenAlexProvider`: Free open scholarly graph with polite-pool indexing and inverted-index abstract reconstruction.
@@ -100,5 +100,5 @@ graph TD
 
 ## 3. Storage & Persistence
 - Local file-based caching for LLM requests (`data/cache/llm_cache/`).
-- In-memory session registry with SQLite/database repository readiness.
-- Zero external vector database cost — uses local CPU embeddings / deterministic relevance ranking with keyword-semantic cross-scoring.
+- Ephemeral / In-Memory Sessions repository readiness.
+- Zero external vector database cost — uses Deterministic relevance ranking with keyword-semantic cross-scoring.
