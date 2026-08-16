@@ -9,6 +9,7 @@ import re
 from datetime import datetime
 from typing import Optional
 
+from pydantic import BaseModel
 from backend.app.core.config import get_settings
 from backend.app.models.research import (
     ResearchSession, SessionStatus, AgentStatus, ResearchPlan, Paper,
@@ -16,7 +17,8 @@ from backend.app.models.research import (
     Contradiction, ConsensusFinding, ResearchGap, NoveltyAssessment,
     ExperimentProposal, RedTeamResult, AuditResult, MissingExperiment,
     ContradictionType, ConsensusStatus, EvidenceConfidence, Availability,
-    Author, SearchResult, WhyExplanation, WhyEvidenceChainItem, TimelineMilestone, new_id
+    Author, SearchResult, WhyExplanation, WhyEvidenceChainItem, TimelineMilestone, new_id,
+    ClaimList, ConsensusList, GapList
 )
 from backend.app.providers.llm_provider import get_llm_provider
 from backend.app.providers.academic import (
@@ -50,6 +52,11 @@ class ResearchPipeline:
     def register_callback(self, callback):
         """Register a callback for agent events."""
         self._event_callbacks.append(callback)
+
+    def remove_callback(self, callback):
+        """Remove a previously registered callback."""
+        if callback in self._event_callbacks:
+            self._event_callbacks.remove(callback)
 
     async def _emit_event(self, session: ResearchSession, agent: str,
                           status: AgentStatus, message: str = "",
@@ -449,17 +456,31 @@ class ResearchPipeline:
         return t
 
     def _rank_papers(self, papers: list[Paper], question: str) -> list[Paper]:
-        """Rank papers by composite research score."""
-        question_lower = question.lower()
-        question_words = set(question_lower.split())
+        """Rank papers using a deterministic hybrid scoring heuristic."""
+        import math
+        
+        q_clean = re.sub(r'[^\w\s]', '', question.lower())
+        q_words = [w for w in q_clean.split() if len(w) > 3]
+        if not q_words:
+            q_words = q_clean.split()
 
         for p in papers:
-            # Relevance: keyword overlap
-            title_words = set(p.title.lower().split())
-            abstract_words = set((p.abstract or "").lower().split())
-            title_overlap = len(question_words & title_words) / max(len(question_words), 1)
-            abstract_overlap = len(question_words & abstract_words) / max(len(question_words), 1)
-            relevance = 0.4 * title_overlap + 0.6 * abstract_overlap
+            title_clean = re.sub(r'[^\w\s]', '', p.title.lower())
+            abstract_clean = re.sub(r'[^\w\s]', '', (p.abstract or "").lower())
+            
+            exact_phrase_score = 0.0
+            if q_clean and q_clean in title_clean:
+                exact_phrase_score += 1.0
+            if q_clean and q_clean in abstract_clean:
+                exact_phrase_score += 0.5
+                
+            title_matches = sum(1 for w in q_words if w in title_clean.split())
+            abstract_matches = sum(1 for w in q_words if w in abstract_clean.split())
+            
+            title_overlap = title_matches / max(len(q_words), 1)
+            abstract_overlap = min(1.0, abstract_matches / max(len(q_words), 1))
+            
+            relevance = min(1.0, (0.5 * title_overlap) + (0.3 * abstract_overlap) + (0.2 * exact_phrase_score))
 
             # Recency
             recency = 0.0
@@ -469,16 +490,15 @@ class ResearchPipeline:
             # Citation influence (log scale)
             citation_score = 0.0
             if p.citation_count and p.citation_count > 0:
-                import math
                 citation_score = min(1.0, math.log(p.citation_count + 1) / 6)
 
-            # Has abstract
+            # Completeness
             completeness = 0.5 if p.abstract else 0.0
 
             # Composite score
             p.relevance_score = round(relevance, 3)
             p.research_score = round(
-                0.35 * relevance + 0.25 * recency + 0.20 * citation_score + 0.20 * completeness,
+                0.40 * relevance + 0.25 * recency + 0.20 * citation_score + 0.15 * completeness,
                 3
             )
             p.score_components = {
@@ -515,10 +535,6 @@ class ResearchPipeline:
             findings="\n".join(analysis.main_findings)
         )
 
-        class ClaimList(BaseModel):
-            claims: list[Claim] = []
-
-        from pydantic import BaseModel
         try:
             claims_result = await self.llm.structured_generate(claims_prompt, ClaimList, system_prompt=SYSTEM_PROMPT)
             for claim in claims_result.claims:
@@ -552,7 +568,8 @@ class ResearchPipeline:
             for title_norm, ref_id in paper_titles.items():
                 if ref_id != pid and title_norm in text:
                     edges.append(CitationEdge(
-                        source_paper_id=pid, target_paper_id=ref_id
+                        source_paper_id=pid, target_paper_id=ref_id,
+                        is_inferred=True, context="Inferred from textual overlap in abstract"
                     ))
         return edges
 
@@ -616,10 +633,6 @@ class ResearchPipeline:
             claims_summary=claims_summary or "No claims extracted"
         )
 
-        class ConsensusList(BaseModel):
-            findings: list[ConsensusFinding] = []
-
-        from pydantic import BaseModel
         try:
             result = await self.llm.structured_generate(prompt, ConsensusList, system_prompt=SYSTEM_PROMPT)
             return result.findings
@@ -652,10 +665,6 @@ class ResearchPipeline:
             datasets_summary=datasets_summary or "No datasets"
         )
 
-        class GapList(BaseModel):
-            gaps: list[ResearchGap] = []
-
-        from pydantic import BaseModel
         try:
             result = await self.llm.structured_generate(prompt, GapList, system_prompt=SYSTEM_PROMPT)
             return result.gaps
@@ -739,19 +748,27 @@ class ResearchPipeline:
         claims_with_evidence = sum(1 for c in session.claims
                                    if any(e.claim_id == c.id for e in session.evidence))
         unsupported = total_claims - claims_with_evidence
+        
+        verified_papers = sum(1 for p in session.papers.values() 
+                              if p.doi or (p.source_provider and p.source_provider not in ["upload", "demo_inferred"]))
+
+        bib_validated = all(
+            p.title and p.authors and (p.year or p.venue or p.doi) 
+            for p in session.papers.values()
+        )
 
         return AuditResult(
             total_claims=total_claims,
             claims_with_evidence=claims_with_evidence,
             unsupported_claims=unsupported,
-            citations_verified=len(session.papers),
+            citations_verified=verified_papers,
             citations_total=len(session.papers),
             contradictions_represented=len(session.contradictions) > 0,
-            bibliography_validated=all(p.title and p.authors for p in session.papers.values()),
+            bibliography_validated=bib_validated,
             uncertainty_levels_present=any(c.confidence for c in session.claims),
             issues=[f"{unsupported} claims lack direct evidence linkage"] if unsupported > 0 else [],
-            warnings=["Analysis based on retrieved literature only — not exhaustive"],
-            overall_integrity="passed" if unsupported <= 2 else "warnings" if unsupported <= 5 else "failed"
+            warnings=["Analysis includes unverified or uploaded PDFs — not fully peer-reviewed"] if verified_papers < len(session.papers) else [],
+            overall_integrity="passed" if unsupported <= 2 and bib_validated else "warnings" if unsupported <= 5 else "failed"
         )
 
     async def explain_why(self, session_id: str, target_type: str, target_id: str) -> Optional[WhyExplanation]:
@@ -1037,7 +1054,7 @@ class ResearchPipeline:
         lines = text.split("\n")
         title = filename.replace(".pdf", "").replace("_", " ").replace("-", " ")
         if lines:
-            for l in lines[:10]:
+            for l in lines[:20]:
                 if len(l.strip()) > 15 and not l.startswith("http"):
                     title = l.strip()
                     break
@@ -1045,18 +1062,40 @@ class ResearchPipeline:
         abstract = ""
         m = re.search(r'(?:abstract|summary)[:\s]*(.*?)(?:1\.?\s*introduction|keywords|i\.\s*introduction)', text, re.IGNORECASE | re.DOTALL)
         if m:
-            abstract = m.group(1).strip()[:2000]
+            abstract = m.group(1).strip()[:3000]
         else:
-            abstract = text[:1000]
+            abstract = text[:2000]
+
+        authors = [Author(name="Unknown Author")]
+        year = datetime.utcnow().year
+        venue = "Uploaded PDF"
+
+        if not self.settings.demo_mode:
+            try:
+                class PDFMeta(BaseModel):
+                    title: str
+                    authors: list[str]
+                    year: int
+                    venue: str
+                
+                meta_prompt = f"Extract metadata from the start of this academic paper:\n\n{text[:3000]}"
+                meta_result = await self.llm.structured_generate(meta_prompt, PDFMeta)
+                title = meta_result.title or title
+                if meta_result.authors:
+                    authors = [Author(name=a) for a in meta_result.authors]
+                year = meta_result.year or year
+                venue = meta_result.venue or venue
+            except Exception as e:
+                logger.warning(f"Failed to extract PDF metadata via LLM: {e}")
 
         paper = Paper(
             title=title,
-            authors=[Author(name="User Uploaded Author")],
-            year=datetime.utcnow().year,
-            venue="User Uploaded PDF",
+            authors=authors,
+            year=year,
+            venue=venue,
             abstract=abstract,
             full_text_available=True,
-            sections={"full_text": text[:10000], "abstract": abstract},
+            sections={"full_text": text[:75000], "abstract": abstract},
             source_provider="upload",
             relevance_score=0.9,
             evidence_quality=0.85,

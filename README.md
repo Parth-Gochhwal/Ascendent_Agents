@@ -10,8 +10,9 @@ Built for **Track 04 — AI Academic Research Assistant** at the Ascendant Agent
 
 - **Research Planning**: Decomposes questions into subquestions, concepts, and multi-source search strategies
 - **Multi-Source Literature Discovery**: OpenAlex, Semantic Scholar, Crossref, arXiv
-- **Intelligent Deduplication & Ranking**: DOI/title normalization with composite research scoring
+- **Deterministic Semantic Ranking**: BM25-style hybrid heuristic (exact phrase, abstract overlap, recency, citations) for safe, dependency-free ranking
 - **Deep Paper Analysis**: Structured extraction of findings, methods, limitations
+- **Ephemeral Research Sessions**: In-memory architecture prioritizing extreme reliability and speed for demo/hackathon environments
 - **Evidence Extraction**: Atomic claims with traceable evidence chains
 - **Contradiction Engine**: Context-aware scientific disagreement analysis (not simple text matching)
 - **Consensus Analysis**: Determines agreement, contested, and unresolved findings

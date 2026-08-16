@@ -402,3 +402,4 @@ async def research_websocket(websocket: WebSocket, session_id: str):
             await websocket.receive_text()
     except WebSocketDisconnect:
         ws_manager.disconnect(session_id, websocket)
+        pipeline.remove_callback(event_callback)

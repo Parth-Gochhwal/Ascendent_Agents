@@ -163,6 +163,10 @@ class Evidence(BaseModel):
     source_location: Optional[str] = None
 
 
+class ClaimList(BaseModel):
+    claims: list[Claim] = []
+
+
 class MethodPipeline(BaseModel):
     """Structured method representation."""
     id: str = Field(default_factory=new_id)
@@ -206,6 +210,7 @@ class CitationEdge(BaseModel):
     target_paper_id: str
     relation: CitationRelation = CitationRelation.CITES
     context: Optional[str] = None
+    is_inferred: bool = True
 
 
 class Contradiction(BaseModel):
@@ -238,6 +243,10 @@ class ConsensusFinding(BaseModel):
     explanation: str = ""
 
 
+class ConsensusList(BaseModel):
+    findings: list[ConsensusFinding] = []
+
+
 class ResearchGap(BaseModel):
     """An identified research gap."""
     id: str = Field(default_factory=new_id)
@@ -249,6 +258,10 @@ class ResearchGap(BaseModel):
     confidence: EvidenceConfidence = EvidenceConfidence.MEDIUM
     potential_direction: Optional[str] = None
     why_it_matters: Optional[str] = None
+
+
+class GapList(BaseModel):
+    gaps: list[ResearchGap] = []
 
 
 class NoveltyAssessment(BaseModel):

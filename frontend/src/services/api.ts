@@ -1,5 +1,46 @@
 /** NEXUS API Client */
-const API_BASE = 'http://localhost:8000/api';
+const HOST = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
+const PROTOCOL = typeof window !== 'undefined' && window.location.protocol === 'https:' ? 'https:' : 'http:';
+const WS_PROTOCOL = PROTOCOL === 'https:' ? 'wss:' : 'ws:';
+const PORT = '8000'; // Fallback to local dev port
+const API_BASE = (import.meta as any).env?.VITE_API_URL || `${PROTOCOL}//${HOST}:${PORT}/api`;
+const WS_BASE = (import.meta as any).env?.VITE_WS_URL || `${WS_PROTOCOL}//${HOST}:${PORT}/api`;
+
+export interface Paper {
+  id: string;
+  title: string;
+  authors: { name: string }[];
+  year: number;
+  venue: string;
+  abstract: string;
+  doi?: string;
+  research_score: number;
+  is_demo: boolean;
+}
+
+export interface Claim {
+  id: string;
+  paper_id: string;
+  statement: string;
+  confidence: string;
+}
+
+export interface AuditResult {
+  total_claims: number;
+  claims_with_evidence: number;
+  unsupported_claims: number;
+  citations_verified: number;
+  citations_total: number;
+  overall_integrity: string;
+}
+
+export interface ResearchSession {
+  id: string;
+  status: string;
+  question: string;
+  is_demo: boolean;
+  stats: any;
+}
 
 async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
@@ -75,7 +116,7 @@ export const api = {
   uploadPdf: async (sessionId: string, file: File) => {
     const formData = new FormData();
     formData.append('file', file);
-    const res = await fetch(`http://localhost:8000/api/research/session/${sessionId}/upload-pdf`, {
+    const res = await fetch(`${API_BASE}/research/session/${sessionId}/upload-pdf`, {
       method: 'POST',
       body: formData,
     });
@@ -89,7 +130,7 @@ export const api = {
 
 
 export function connectWebSocket(sessionId: string, onEvent: (event: any) => void): WebSocket {
-  const ws = new WebSocket(`ws://localhost:8000/api/ws/research/${sessionId}`);
+  const ws = new WebSocket(`${WS_BASE}/ws/research/${sessionId}`);
   ws.onmessage = (event) => {
     try {
       const data = JSON.parse(event.data);

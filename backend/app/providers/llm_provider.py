@@ -97,6 +97,7 @@ class GeminiProvider(LLMProvider):
         self.fast_model = settings.gemini_fast_model
         self.cache = LLMCache(settings.cache_dir)
         self.rate_limiter = RateLimiter(settings.llm_rate_limit_per_minute)
+        self.semaphore = asyncio.Semaphore(settings.max_concurrent_llm_calls)
         self._client = None
 
     def _get_client(self):
@@ -130,12 +131,13 @@ class GeminiProvider(LLMProvider):
 
         for attempt in range(3):
             try:
-                response = await asyncio.to_thread(
-                    client.models.generate_content,
-                    model=model,
-                    contents=prompt,
-                    config=config,
-                )
+                async with self.semaphore:
+                    response = await asyncio.to_thread(
+                        client.models.generate_content,
+                        model=model,
+                        contents=prompt,
+                        config=config,
+                    )
                 text = response.text or ""
                 self.cache.set(prompt, system_prompt, model, text)
                 return text
