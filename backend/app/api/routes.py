@@ -257,6 +257,7 @@ async def toggle_demo_mode():
     """Toggle demo/live mode."""
     settings = get_settings()
     settings.demo_mode = not settings.demo_mode
+    get_pipeline().reinitialize()
     return {"demo_mode": settings.demo_mode, "message": f"Demo mode {'enabled' if settings.demo_mode else 'disabled'}"}
 
 

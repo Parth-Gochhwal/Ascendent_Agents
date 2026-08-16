@@ -809,12 +809,12 @@ def get_demo_audit() -> AuditResult:
     return AuditResult(
         id="audit-demo-001",
         total_claims=16,
-        claims_with_evidence=14,
+        claims_with_evidence_links=14,
         unsupported_claims=2,
-        citations_verified=8,
+        identifiable_source_metadata=8,
         citations_total=8,
         contradictions_represented=True,
-        bibliography_validated=True,
+        bibliographic_metadata_complete=True,
         uncertainty_levels_present=True,
         issues=[
             "2 claims lack direct quantitative evidence (claims about attention mechanism and graph construction variability)",

@@ -26,7 +26,7 @@ class TestPaperNormalization:
         assert p.title == "Test Paper"
         assert len(p.id) == 12
         assert p.authors[0].name == "John Doe"
-        assert p.relevance_score == 0.0
+        assert p.relevance_score is None
 
     def test_paper_score_components(self):
         p = Paper(title="Test", score_components={"relevance": 0.8, "recency": 0.9})
@@ -248,8 +248,8 @@ class TestDemoData:
         from backend.app.services.demo_data import get_demo_audit
         audit = get_demo_audit()
         assert audit.total_claims > 0
-        assert audit.claims_with_evidence > 0
-        assert audit.claims_with_evidence <= audit.total_claims
+        assert audit.claims_with_evidence_links > 0
+        assert audit.claims_with_evidence_links <= audit.total_claims
 
 
 class TestWhyExplainability:
@@ -296,9 +296,8 @@ class TestTimelineGeneration:
         pipeline.sessions[session.id] = session
         
         timeline = pipeline.get_timeline(session.id)
-        assert len(timeline) >= 4
+        assert len(timeline) >= 3
         years = [m.year for m in timeline]
-        assert 2021 in years
         assert 2024 in years
         assert any(m.breakthrough_indicator for m in timeline)
 

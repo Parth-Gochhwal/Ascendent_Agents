@@ -305,3 +305,21 @@ Provide:
 1. issues: List of specific issues found
 2. warnings: List of warnings (non-critical)
 3. overall_integrity: "passed", "warnings", or "failed" """
+
+MISSING_EXPERIMENTS_V1 = """Analyze the identified gaps and contradictions to infer missing experimental combinations.
+
+GAPS:
+{gaps}
+
+CONTRADICTIONS:
+{contradictions}
+
+Suggest missing experimental combinations (method, dataset, condition) that could address these gaps or resolve contradictions.
+For each missing experiment provide:
+1. method: The proposed method or model architecture
+2. dataset: The target dataset
+3. condition: Specific experimental condition
+4. existing_coverage: Paper IDs that explore adjacent areas
+5. explanation: Why this combination is needed
+
+Generate 2-4 missing experiments."""

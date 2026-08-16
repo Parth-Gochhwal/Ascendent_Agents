@@ -107,9 +107,9 @@ class Paper(BaseModel):
     pdf_url: Optional[str] = None
     open_access: bool = False
     sections: dict[str, str] = Field(default_factory=dict)
-    relevance_score: float = 0.0
-    evidence_quality: float = 0.0
-    research_score: float = 0.0
+    relevance_score: Optional[float] = None
+    evidence_quality: Optional[float] = None
+    research_score: Optional[float] = None
     score_components: dict[str, float] = Field(default_factory=dict)
     is_demo: bool = False
     created_at: datetime = Field(default_factory=datetime.utcnow)
@@ -301,12 +301,12 @@ class AuditResult(BaseModel):
     """Research integrity audit result."""
     id: str = Field(default_factory=new_id)
     total_claims: int = 0
-    claims_with_evidence: int = 0
+    claims_with_evidence_links: int = 0
     unsupported_claims: int = 0
-    citations_verified: int = 0
+    identifiable_source_metadata: int = 0
     citations_total: int = 0
     contradictions_represented: bool = False
-    bibliography_validated: bool = False
+    bibliographic_metadata_complete: bool = False
     uncertainty_levels_present: bool = False
     issues: list[str] = []
     warnings: list[str] = []
@@ -334,6 +334,10 @@ class MissingExperiment(BaseModel):
     condition: Optional[str] = None
     existing_coverage: list[str] = []  # paper IDs that do adjacent experiments
     explanation: str = ""
+
+
+class MissingExperimentList(BaseModel):
+    experiments: list[MissingExperiment] = []
 
 
 class AgentEvent(BaseModel):

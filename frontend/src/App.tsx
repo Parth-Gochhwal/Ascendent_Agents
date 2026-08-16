@@ -529,7 +529,9 @@ function LiteraturePage({ sessionId, session, onWhy }: { sessionId: string; sess
       <div className="page">
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 24 }}>
           <button className="toolbar-btn" onClick={() => { setSelectedPaper(null); setAnalysis(null); }}>← Back to Papers</button>
+        {selectedPaper.research_score != null && (
           <button className="why-btn" onClick={() => onWhy('paper', selectedPaper.id)}>Explain Relevance Score</button>
+        )}
         </div>
 
         <div className="card" style={{ marginBottom: 16 }}>
@@ -659,10 +661,16 @@ function LiteraturePage({ sessionId, session, onWhy }: { sessionId: string; sess
             {p.abstract && <div className="paper-abstract">{p.abstract}</div>}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 12 }}>
               <div className="score-bar" style={{ flex: 1, marginRight: 12 }}>
-                <div className="score-track">
-                  <div className="score-fill" style={{ width: `${(p.research_score || 0) * 100}%` }}></div>
-                </div>
-                <span className="score-value">{((p.research_score || 0) * 100).toFixed(0)}% Score</span>
+                {p.research_score != null ? (
+                  <>
+                    <div className="score-track">
+                      <div className="score-fill" style={{ width: `${p.research_score * 100}%` }}></div>
+                    </div>
+                    <span className="score-value">{(p.research_score * 100).toFixed(0)}% Score</span>
+                  </>
+                ) : (
+                  <span className="score-value" style={{ color: 'var(--text-tertiary)', fontStyle: 'italic' }}>Not Evaluated</span>
+                )}
               </div>
               <button
                 className="why-btn"
@@ -783,51 +791,35 @@ function MethodsPage({ sessionId, session, onWhy }: { sessionId: string; session
       <div className="card" style={{ marginBottom: 24 }}>
         <div className="card-title" style={{ marginBottom: 12 }}>Method vs Benchmark Dataset Coverage Matrix</div>
         <div style={{ overflowX: 'auto' }}>
-          <table className="matrix-table">
-            <thead>
-              <tr>
-                <th>Model Architecture</th>
-                <th>NASA Battery (NMC)</th>
-                <th>CALCE Dataset (LFP)</th>
-                <th>Oxford Degradation</th>
-                <th>Cross-Chemistry Shift</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td className="row-header">LSTM / GRU Baselines</td>
-                <td className="matrix-cell-pass">✓ Explored</td>
-                <td className="matrix-cell-pass">✓ Explored</td>
-                <td className="matrix-cell-pass">✓ Explored</td>
-                <td className="matrix-cell-miss">⚠ Underexplored</td>
-              </tr>
-              <tr>
-                <td className="row-header">Vanilla Transformer</td>
-                <td className="matrix-cell-pass">✓ Explored</td>
-                <td className="matrix-cell-pass">✓ Explored</td>
-                <td className="matrix-cell-pass">✓ Explored</td>
-                <td className="matrix-cell-miss">⚠ Underexplored</td>
-              </tr>
-              <tr>
-                <td className="row-header">Graph Attention Network (GAT)</td>
-                <td className="matrix-cell-pass">✓ Explored</td>
-                <td className="matrix-cell-miss">⚠ Underexplored</td>
-                <td className="matrix-cell-pass">✓ Explored</td>
-                <td className="matrix-cell-miss" style={{ background: 'rgba(239, 68, 68, 0.12)', color: 'var(--accent-red)' }}>
-                  ★ Missing Benchmark
-                </td>
-              </tr>
-              <tr>
-                <td className="row-header">Domain-Adaptive GAT (Proposed)</td>
-                <td className="matrix-cell-miss">Proposed</td>
-                <td className="matrix-cell-miss">Proposed</td>
-                <td className="matrix-cell-miss">Proposed</td>
-                <td className="matrix-cell-miss" style={{ background: 'rgba(139, 92, 246, 0.15)', color: 'var(--accent-purple)' }}>
-                  🎯 Target Gap
-                </td>
-              </tr>
-            </tbody>
-          </table>
+          {methods.length > 0 ? (
+            <table className="matrix-table">
+              <thead>
+                <tr>
+                  <th>Model Architecture</th>
+                  {Array.from(new Set(methods.map(m => m.dataset).filter(Boolean))).map(d => (
+                    <th key={d}>{d}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {Array.from(new Set(methods.map(m => m.model_architecture).filter(Boolean))).map(model => (
+                  <tr key={model}>
+                    <td className="row-header">{model}</td>
+                    {Array.from(new Set(methods.map(m => m.dataset).filter(Boolean))).map(dataset => {
+                      const hasMethod = methods.some(m => m.model_architecture === model && m.dataset === dataset);
+                      return (
+                        <td key={dataset} className={hasMethod ? "matrix-cell-pass" : "matrix-cell-miss"}>
+                          {hasMethod ? "✓ Explored" : "⚠ Underexplored"}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <div style={{ padding: 20, color: 'var(--text-tertiary)' }}>No methods extracted yet to build coverage matrix.</div>
+          )}
         </div>
       </div>
 
@@ -1390,23 +1382,23 @@ function AuditPage({ sessionId, session, onWhy }: { sessionId: string; session: 
         <div className="audit-grid" style={{ marginBottom: 24 }}>
           <div className="audit-metric pass">
             <div className="value">{audit.total_claims}</div>
-            <div className="label">Claims Verified</div>
+            <div className="label">Claims Checked</div>
           </div>
           <div className="audit-metric pass">
-            <div className="value">{audit.claims_with_evidence}</div>
-            <div className="label">Grounded in Evidence</div>
+            <div className="value">{audit.claims_with_evidence_links}</div>
+            <div className="label">Claim Has Evidence Links</div>
           </div>
           <div className={`audit-metric ${audit.unsupported_claims === 0 ? 'pass' : 'warn'}`}>
             <div className="value">{audit.unsupported_claims}</div>
             <div className="label">Unsupported Claims</div>
           </div>
           <div className="audit-metric pass">
-            <div className="value">{audit.citations_verified}/{audit.citations_total}</div>
-            <div className="label">Citations Verified</div>
+            <div className="value">{audit.identifiable_source_metadata}/{audit.citations_total}</div>
+            <div className="label">Identifiable Source Metadata</div>
           </div>
-          <div className="audit-metric pass">
-            <div className="value">100%</div>
-            <div className="label">Bibliography Validated</div>
+          <div className={`audit-metric ${audit.bibliographic_metadata_complete ? 'pass' : 'warn'}`}>
+            <div className="value">{audit.bibliographic_metadata_complete ? "100%" : "INCOMPLETE"}</div>
+            <div className="label">Bibliographic Metadata Complete</div>
           </div>
           <div className="audit-metric pass">
             <div className="value">{audit.overall_integrity?.toUpperCase()}</div>

@@ -18,7 +18,7 @@ from backend.app.models.research import (
     ExperimentProposal, RedTeamResult, AuditResult, MissingExperiment,
     ContradictionType, ConsensusStatus, EvidenceConfidence, Availability,
     Author, SearchResult, WhyExplanation, WhyEvidenceChainItem, TimelineMilestone, new_id,
-    ClaimList, ConsensusList, GapList
+    ClaimList, ConsensusList, GapList, MissingExperimentList
 )
 from backend.app.providers.llm_provider import get_llm_provider
 from backend.app.providers.academic import (
@@ -38,8 +38,15 @@ class ResearchPipeline:
         self.llm = get_llm_provider()
         self.sessions: dict[str, ResearchSession] = {}
         self._event_callbacks: list = []
+        self.providers = []
+        self.reinitialize()
 
-        # Initialize academic providers
+    def reinitialize(self):
+        """Rebuild provider layers from current config while preserving active sessions."""
+        self.settings = get_settings()
+        self.llm = get_llm_provider()
+        
+        # Reinitialize academic providers if live
         self.providers = []
         if not self.settings.demo_mode:
             self.providers = [
@@ -379,8 +386,17 @@ class ResearchPipeline:
         await self._emit_event(session, "Gap Detector", AgentStatus.COMPLETED,
                                f"Identified {len(session.gaps)} gaps")
 
-        # Phase 10+: Novelty, Experiment, Red Team, Audit
+        # Phase 10+: Missing Experiments, Novelty, Experiment, Red Team, Audit
         session.status = SessionStatus.ANALYZING_NOVELTY
+        await self._emit_event(session, "Experiment Detector", AgentStatus.RUNNING,
+                               "Detecting missing experiments...")
+        try:
+            session.missing_experiments = await self._detect_missing_experiments(session)
+        except Exception as e:
+            logger.warning(f"Missing experiment detection failed: {e}")
+        await self._emit_event(session, "Experiment Detector", AgentStatus.COMPLETED,
+                               f"Identified {len(session.missing_experiments)} missing experiments")
+
         await self._emit_event(session, "Novelty Analyzer", AgentStatus.RUNNING,
                                "Evaluating potential research directions...")
         await self._emit_event(session, "Novelty Analyzer", AgentStatus.COMPLETED,
@@ -701,6 +717,19 @@ class ResearchPipeline:
             logger.error(f"Novelty analysis failed: {e}")
             return None
 
+    async def _detect_missing_experiments(self, session: ResearchSession) -> list[MissingExperiment]:
+        """Detect missing experimental combinations based on gaps and contradictions."""
+        gaps_text = "\n".join([f"- {g.title}: {g.description}" for g in session.gaps])
+        contradictions_text = "\n".join([f"- {c.claim_a_text} vs {c.claim_b_text}" for c in session.contradictions])
+        
+        prompt = MISSING_EXPERIMENTS_V1.format(
+            gaps=gaps_text if gaps_text else "None explicitly identified.",
+            contradictions=contradictions_text if contradictions_text else "None explicitly identified."
+        )
+        
+        result = await self.llm.structured_generate(prompt, MissingExperimentList, system_prompt=SYSTEM_PROMPT)
+        return result.experiments if result else []
+
     async def _design_experiment(self, session: ResearchSession) -> ExperimentProposal:
         """Design experiment for top research gap."""
         gap = session.gaps[0]
@@ -759,12 +788,12 @@ class ResearchPipeline:
 
         return AuditResult(
             total_claims=total_claims,
-            claims_with_evidence=claims_with_evidence,
+            claims_with_evidence_links=claims_with_evidence,
             unsupported_claims=unsupported,
-            citations_verified=verified_papers,
+            identifiable_source_metadata=verified_papers,
             citations_total=len(session.papers),
             contradictions_represented=len(session.contradictions) > 0,
-            bibliography_validated=bib_validated,
+            bibliographic_metadata_complete=bib_validated,
             uncertainty_levels_present=any(c.confidence for c in session.claims),
             issues=[f"{unsupported} claims lack direct evidence linkage"] if unsupported > 0 else [],
             warnings=["Analysis includes unverified or uploaded PDFs — not fully peer-reviewed"] if verified_papers < len(session.papers) else [],
@@ -816,9 +845,9 @@ class ResearchPipeline:
                 confidence=item.confidence,
                 evidence_chain=evidence_chain,
                 reasoning_factors=reasons,
-                uncertainty_analysis="The apparent contradiction is driven by differing experimental evaluation setups (such as dataset chemistry and prediction horizons) rather than fundamentally conflicting empirical laws.",
+                uncertainty_analysis="Analysis of the conflicting claims suggests divergence may stem from differing experimental methodologies or datasets rather than fundamentally conflicting phenomena, though explicit reporting is required to confirm.",
                 conflicting_evidence=[item.claim_b_text],
-                counter_hypotheses=["The performance delta may invert under long-range sequential horizon testing."]
+                counter_hypotheses=[f"The observed performance difference may invert under different tested conditions such as {item.different_conditions[0] if item.different_conditions else 'unreported variables'}."]
             )
 
         elif target_type == "consensus":
@@ -848,7 +877,7 @@ class ResearchPipeline:
                     f"Supported by {len(item.supporting_paper_ids)} independent peer-reviewed studies",
                     item.explanation or "Multiple independent experimental benchmarks report mutually reinforcing outcomes."
                 ],
-                uncertainty_analysis="High empirical convergence across tested datasets; caveats remain regarding non-tested cell chemistries.",
+                uncertainty_analysis="High empirical convergence across tested conditions; however, caveats remain regarding generalizability to domains not explicitly tested in the cited literature.",
                 conflicting_evidence=[f"Dissenting studies: {len(item.dissenting_paper_ids)}"] if item.dissenting_paper_ids else []
             )
 
@@ -960,62 +989,100 @@ class ResearchPipeline:
             y = p.year or 2024
             year_to_papers.setdefault(y, []).append(p)
 
-        milestones = [
-            TimelineMilestone(
-                year=2019,
-                paradigm="Empirical & Statistical Degradation",
-                title="Early Statistical and Filter-Based RUL Models",
-                description="Initial approaches focused on particle filtering, Gaussian Process Regression, and empirical capacity fade curve fitting.",
-                paper_ids=[],
-                key_methods=["Kalman Filter", "GPR", "Support Vector Regression"],
-                breakthrough_indicator=False,
-            ),
-            TimelineMilestone(
-                year=2021,
-                paradigm="Recurrent Sequence Networks",
-                title="LSTM and GRU Dominance in Time-Series RUL",
-                description="Recurrent deep learning models set early deep baselines on NASA and CALCE datasets for cycle-to-cycle capacity estimation.",
-                paper_ids=[p.id for p in year_to_papers.get(2021, [])],
-                key_methods=["LSTM", "GRU", "Bi-LSTM"],
-                breakthrough_indicator=False,
-            ),
-            TimelineMilestone(
-                year=2023,
-                paradigm="Self-Attention & Transformers",
-                title="Attention Mechanisms for Long-Horizon Forecasting",
-                description="Transformer architectures introduced multi-head self-attention to capture long-range capacity degradation trajectories.",
-                paper_ids=[p.id for p in year_to_papers.get(2023, [])],
-                key_methods=["Informer", "Vanilla Transformer", "PatchTST"],
-                breakthrough_indicator=True,
-            ),
-            TimelineMilestone(
-                year=2024,
-                paradigm="Graph Neural Networks (GNN & GAT)",
-                title="Graph Attention Networks for Battery Degradation Modeling",
-                description="Modeling electrochemical cells and charge/discharge phase cycles as graph networks to capture inter-cell and inter-cycle dependencies.",
-                paper_ids=[p.id for p in year_to_papers.get(2024, [])],
-                key_methods=["GAT", "GCN", "Spatial-Temporal GNN"],
-                breakthrough_indicator=True,
-            ),
-            TimelineMilestone(
-                year=2025,
-                paradigm="Multi-Cell & Cross-Domain GNNs",
-                title="Multi-Cell Battery Pack Inter-Cell Graph Modeling",
-                description="Scaling graph representations to multi-cell module temperature and voltage imbalances across battery packs.",
-                paper_ids=[p.id for p in year_to_papers.get(2025, [])],
-                key_methods=["Multi-Cell GNN", "Pack-Level GAT"],
-                breakthrough_indicator=False,
-            ),
-            TimelineMilestone(
-                year=2026,
-                paradigm="Domain-Adaptive & Physics-Informed GNNs",
-                title="Next Frontier: Cross-Chemistry Transfer & Uncertainty-Aware GAT",
-                description="Addressing domain shift across NMC/LFP chemistries and varying ambient temperatures with domain adversarial learning and epistemic uncertainty bounds.",
-                paper_ids=[],
-                key_methods=["Domain-Adaptive GAT", "Physics-Informed GNN", "Bayesian Graph Neural Networks"],
-                breakthrough_indicator=True,
+        is_battery_demo = self.settings.demo_mode and any(k in session.question.lower() for k in ["battery", "rul", "degradation", "lithium"])
+
+        if is_battery_demo:
+            return [
+                TimelineMilestone(
+                    year=2019,
+                    paradigm="Empirical & Statistical Degradation",
+                    title="Early Statistical and Filter-Based RUL Models",
+                    description="Initial approaches focused on particle filtering, Gaussian Process Regression, and empirical capacity fade curve fitting.",
+                    paper_ids=[],
+                    key_methods=["Kalman Filter", "GPR", "Support Vector Regression"],
+                    breakthrough_indicator=False,
+                ),
+                TimelineMilestone(
+                    year=2021,
+                    paradigm="Recurrent Sequence Networks",
+                    title="LSTM and GRU Dominance in Time-Series RUL",
+                    description="Recurrent deep learning models set early deep baselines on NASA and CALCE datasets for cycle-to-cycle capacity estimation.",
+                    paper_ids=[p.id for p in year_to_papers.get(2021, [])],
+                    key_methods=["LSTM", "GRU", "Bi-LSTM"],
+                    breakthrough_indicator=False,
+                ),
+                TimelineMilestone(
+                    year=2023,
+                    paradigm="Self-Attention & Transformers",
+                    title="Attention Mechanisms for Long-Horizon Forecasting",
+                    description="Transformer architectures introduced multi-head self-attention to capture long-range capacity degradation trajectories.",
+                    paper_ids=[p.id for p in year_to_papers.get(2023, [])],
+                    key_methods=["Informer", "Vanilla Transformer", "PatchTST"],
+                    breakthrough_indicator=True,
+                ),
+                TimelineMilestone(
+                    year=2024,
+                    paradigm="Graph Neural Networks (GNN & GAT)",
+                    title="Graph Attention Networks for Battery Degradation Modeling",
+                    description="Modeling electrochemical cells and charge/discharge phase cycles as graph networks to capture inter-cell and inter-cycle dependencies.",
+                    paper_ids=[p.id for p in year_to_papers.get(2024, [])],
+                    key_methods=["GAT", "GCN", "Spatial-Temporal GNN"],
+                    breakthrough_indicator=True,
+                ),
+                TimelineMilestone(
+                    year=2025,
+                    paradigm="Multi-Cell & Cross-Domain GNNs",
+                    title="Multi-Cell Battery Pack Inter-Cell Graph Modeling",
+                    description="Scaling graph representations to multi-cell module temperature and voltage imbalances across battery packs.",
+                    paper_ids=[p.id for p in year_to_papers.get(2025, [])],
+                    key_methods=["Multi-Cell GNN", "Pack-Level GAT"],
+                    breakthrough_indicator=False,
+                ),
+                TimelineMilestone(
+                    year=2026,
+                    paradigm="Domain-Adaptive & Physics-Informed GNNs",
+                    title="Next Frontier: Cross-Chemistry Transfer & Uncertainty-Aware GAT",
+                    description="Addressing domain shift across NMC/LFP chemistries and varying ambient temperatures with domain adversarial learning and epistemic uncertainty bounds.",
+                    paper_ids=[],
+                    key_methods=["Domain-Adaptive GAT", "Physics-Informed GNN", "Bayesian Graph Neural Networks"],
+                    breakthrough_indicator=True,
+                )
+            ]
+
+        # Dynamic evidence-based generation for live mode or non-battery domains
+        sorted_years = sorted(year_to_papers.keys())
+        milestones = []
+        for i, year in enumerate(sorted_years):
+            papers = year_to_papers[year]
+            
+            # Extract methods used in this year
+            methods_this_year = set()
+            for p in papers:
+                for m in session.methods:
+                    if m.paper_id == p.id and m.model_architecture:
+                        methods_this_year.add(m.model_architecture)
+                        
+            key_methods = list(methods_this_year)[:3]
+            
+            paradigm = f"Methodological Focus {year}"
+            title = f"Research Developments in {year}"
+            if key_methods:
+                desc = f"Key publications focused on exploring methodologies including: {', '.join(key_methods)}."
+            else:
+                desc = f"Published {len(papers)} key papers addressing the primary research gap."
+                
+            milestones.append(
+                TimelineMilestone(
+                    year=year,
+                    paradigm=paradigm,
+                    title=title,
+                    description=desc,
+                    paper_ids=[p.id for p in papers],
+                    key_methods=key_methods,
+                    breakthrough_indicator=(i == len(sorted_years) - 1 or len(papers) > 2)
+                )
             )
-        ]
+            
         return milestones
 
     async def ingest_pdf(self, session_id: str, file_bytes: bytes, filename: str) -> Optional[Paper]:
@@ -1097,10 +1164,10 @@ class ResearchPipeline:
             full_text_available=True,
             sections={"full_text": text[:75000], "abstract": abstract},
             source_provider="upload",
-            relevance_score=0.9,
-            evidence_quality=0.85,
-            research_score=0.88,
-            score_components={"relevance": 0.9, "recency": 1.0, "citation_influence": 0.5, "completeness": 1.0}
+            relevance_score=None,
+            evidence_quality=None,
+            research_score=None,
+            score_components={}
         )
 
         session.papers[paper.id] = paper

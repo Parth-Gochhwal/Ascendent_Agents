@@ -27,10 +27,11 @@ export interface Claim {
 
 export interface AuditResult {
   total_claims: number;
-  claims_with_evidence: number;
+  claims_with_evidence_links: number;
   unsupported_claims: number;
-  citations_verified: number;
+  identifiable_source_metadata: number;
   citations_total: number;
+  bibliographic_metadata_complete: boolean;
   overall_integrity: string;
 }
 
