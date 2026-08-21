@@ -340,13 +340,15 @@ class ResearchPipeline:
         await self._emit_event(session, planning_agent.name, AgentStatus.RUNNING, "Analyzing research question...")
         try:
             await planning_agent.execute(session)
-            planning_agent.record_stage(session, "planning", StageResult.SUCCESS)
+            if "planning" not in session.stage_results:
+                planning_agent.record_stage(session, "planning", StageResult.SUCCESS)
+            status_desc = session.stage_results.get("planning", StageResult.SUCCESS.value)
             await self._emit_event(session, planning_agent.name, AgentStatus.COMPLETED,
-                                   f"Decomposed into {len(session.plan.subquestions)} subquestions")
+                                   f"Decomposed into {len(session.plan.subquestions)} subquestions ({status_desc})")
         except Exception as e:
             logger.error(f"Planning failed: {e}")
             planning_agent.record_stage(session, "planning", StageResult.PARTIAL,
-                                        "Planning failed — using fallback plan")
+                                        f"Planning failed ({e}) — using fallback plan")
             await self._emit_event(session, planning_agent.name, AgentStatus.FAILED, str(e))
             session.plan = ResearchPlan(
                 normalized_question=session.question,
@@ -359,13 +361,15 @@ class ResearchPipeline:
         await self._emit_event(session, retrieval_agent.name, AgentStatus.RUNNING, "Searching and ranking literature...")
         try:
             found, deduped, selected = await retrieval_agent.execute(session)
-            if selected == 0:
-                retrieval_agent.record_stage(session, "retrieval", StageResult.FAILED,
-                                             "No papers retrieved — downstream analysis will be empty")
-            else:
-                retrieval_agent.record_stage(session, "retrieval", StageResult.SUCCESS)
+            if "retrieval" not in session.stage_results:
+                if selected == 0:
+                    retrieval_agent.record_stage(session, "retrieval", StageResult.FAILED,
+                                                 "No papers retrieved — downstream analysis will be empty")
+                else:
+                    retrieval_agent.record_stage(session, "retrieval", StageResult.SUCCESS)
+            status_desc = session.stage_results.get("retrieval", StageResult.SUCCESS.value)
             await self._emit_event(session, retrieval_agent.name, AgentStatus.COMPLETED,
-                                   f"Found: {found} → Dedup: {deduped} → Selected: {selected}")
+                                   f"Found: {found} → Dedup: {deduped} → Selected: {selected} ({status_desc})")
         except Exception as e:
             logger.error(f"Retrieval failed: {e}")
             retrieval_agent.record_stage(session, "retrieval", StageResult.FAILED,
@@ -378,17 +382,19 @@ class ResearchPipeline:
             await self._emit_event(session, analysis_agent.name, AgentStatus.RUNNING, "Deeply analyzing papers...")
             try:
                 await analysis_agent.execute(session)
-                if session.claims:
-                    analysis_agent.record_stage(session, "analysis", StageResult.SUCCESS)
-                else:
-                    analysis_agent.record_stage(session, "analysis", StageResult.PARTIAL,
-                                                "Analysis completed but no claims extracted")
+                if "analysis" not in session.stage_results:
+                    if session.claims:
+                        analysis_agent.record_stage(session, "analysis", StageResult.SUCCESS)
+                    else:
+                        analysis_agent.record_stage(session, "analysis", StageResult.PARTIAL,
+                                                    "Analysis completed but no claims extracted")
+                status_desc = session.stage_results.get("analysis", StageResult.SUCCESS.value)
                 await self._emit_event(session, analysis_agent.name, AgentStatus.COMPLETED,
-                                       f"Analyzed {len(session.analyses)} papers, Extracted {len(session.claims)} claims")
+                                       f"Analyzed {len(session.analyses)} papers, Extracted {len(session.claims)} claims ({status_desc})")
             except Exception as e:
                 logger.error(f"Analysis failed: {e}")
                 analysis_agent.record_stage(session, "analysis", StageResult.FAILED,
-                                            "Evidence extraction failed — downstream synthesis has incomplete evidence")
+                                            f"Evidence extraction failed ({e}) — downstream synthesis has incomplete evidence")
                 await self._emit_event(session, analysis_agent.name, AgentStatus.FAILED, str(e))
         else:
             analysis_agent.record_stage(session, "analysis", StageResult.SKIPPED,
@@ -399,13 +405,14 @@ class ResearchPipeline:
         await self._emit_event(session, intelligence_agent.name, AgentStatus.RUNNING, "Building citation graph and pre-synthesis metrics...")
         try:
             await intelligence_agent.execute(session, phase="pre_synthesis")
-            intelligence_agent.record_stage(session, "pre_synthesis_intelligence", StageResult.SUCCESS)
+            if "pre_synthesis_intelligence" not in session.stage_results:
+                intelligence_agent.record_stage(session, "pre_synthesis_intelligence", StageResult.SUCCESS)
             await self._emit_event(session, intelligence_agent.name, AgentStatus.COMPLETED,
                                    f"Mapped {len(session.citations)} citations, {len(session.dead_ends)} dead ends")
         except Exception as e:
             logger.error(f"Pre-synthesis intelligence failed: {e}")
             intelligence_agent.record_stage(session, "pre_synthesis_intelligence", StageResult.FAILED,
-                                            "Citation graph / dead-end / reproducibility profiling failed")
+                                            f"Citation graph / dead-end / reproducibility profiling failed: {e}")
             await self._emit_event(session, intelligence_agent.name, AgentStatus.FAILED, str(e))
 
         # Phase 7 & 8: Contradictions & Consensus
@@ -413,13 +420,15 @@ class ResearchPipeline:
         await self._emit_event(session, synthesis_agent.name, AgentStatus.RUNNING, "Synthesizing evidence...")
         try:
             await synthesis_agent.execute(session)
-            synthesis_agent.record_stage(session, "synthesis", StageResult.SUCCESS)
+            if "synthesis" not in session.stage_results:
+                synthesis_agent.record_stage(session, "synthesis", StageResult.SUCCESS)
+            status_desc = session.stage_results.get("synthesis", StageResult.SUCCESS.value)
             await self._emit_event(session, synthesis_agent.name, AgentStatus.COMPLETED,
-                                   f"Found {len(session.contradictions)} conflicts, {len(session.consensus)} clusters")
+                                   f"Found {len(session.contradictions)} conflicts, {len(session.consensus)} clusters ({status_desc})")
         except Exception as e:
             logger.error(f"Synthesis failed: {e}")
             synthesis_agent.record_stage(session, "synthesis", StageResult.FAILED,
-                                         "Contradiction/consensus analysis failed")
+                                         f"Contradiction/consensus analysis failed: {e}")
             await self._emit_event(session, synthesis_agent.name, AgentStatus.FAILED, str(e))
 
         # Phase 14-16: Innovation (Gaps, Novelty, Experiments)
@@ -427,13 +436,15 @@ class ResearchPipeline:
         await self._emit_event(session, innovation_agent.name, AgentStatus.RUNNING, "Detecting gaps and designing experiments...")
         try:
             await innovation_agent.execute(session)
-            innovation_agent.record_stage(session, "innovation", StageResult.SUCCESS)
+            if "innovation" not in session.stage_results:
+                innovation_agent.record_stage(session, "innovation", StageResult.SUCCESS)
+            status_desc = session.stage_results.get("innovation", StageResult.SUCCESS.value)
             await self._emit_event(session, innovation_agent.name, AgentStatus.COMPLETED,
-                                   f"Identified {len(session.gaps)} gaps, {len(session.missing_experiments)} missing experiments")
+                                   f"Identified {len(session.gaps)} gaps, {len(session.missing_experiments)} missing experiments ({status_desc})")
         except Exception as e:
             logger.error(f"Innovation failed: {e}")
             innovation_agent.record_stage(session, "innovation", StageResult.FAILED,
-                                           "Gap detection / experiment design failed")
+                                           f"Gap detection / experiment design failed: {e}")
             await self._emit_event(session, innovation_agent.name, AgentStatus.FAILED, str(e))
 
         # Phase 17: Red Team
@@ -441,14 +452,16 @@ class ResearchPipeline:
         await self._emit_event(session, red_team_agent.name, AgentStatus.RUNNING, "Adversarial review of findings...")
         try:
             await red_team_agent.execute(session)
-            red_team_agent.record_stage(session, "red_team", StageResult.SUCCESS)
+            if "red_team" not in session.stage_results:
+                red_team_agent.record_stage(session, "red_team", StageResult.SUCCESS)
             confidence = session.red_team.final_confidence.value if session.red_team else "N/A"
+            status_desc = session.stage_results.get("red_team", StageResult.SUCCESS.value)
             await self._emit_event(session, red_team_agent.name, AgentStatus.COMPLETED,
-                                   f"Challenged findings. Confidence: {confidence}")
+                                   f"Challenged findings ({status_desc}). Confidence: {confidence}")
         except Exception as e:
             logger.error(f"Red team failed: {e}")
             red_team_agent.record_stage(session, "red_team", StageResult.FAILED,
-                                        "Adversarial review failed — conclusions lack independent critique")
+                                        f"Adversarial review failed: {e}")
             await self._emit_event(session, red_team_agent.name, AgentStatus.FAILED, str(e))
 
         # Phase 18: Post-Synthesis Intelligence (Audit, Independence weighting)
@@ -456,14 +469,16 @@ class ResearchPipeline:
         await self._emit_event(session, intelligence_agent.name, AgentStatus.RUNNING, "Finalizing integrity audit...")
         try:
             await intelligence_agent.execute(session, phase="post_synthesis")
-            intelligence_agent.record_stage(session, "post_synthesis_intelligence", StageResult.SUCCESS)
+            if "post_synthesis_intelligence" not in session.stage_results:
+                intelligence_agent.record_stage(session, "post_synthesis_intelligence", StageResult.SUCCESS)
             integrity = session.audit.overall_integrity if session.audit else "Unknown"
+            status_desc = session.stage_results.get("post_synthesis_intelligence", StageResult.SUCCESS.value)
             await self._emit_event(session, intelligence_agent.name, AgentStatus.COMPLETED,
-                                   f"Audit complete. Integrity: {integrity}")
+                                   f"Audit complete ({status_desc}). Integrity: {integrity}")
         except Exception as e:
             logger.error(f"Post-synthesis intelligence failed: {e}")
             intelligence_agent.record_stage(session, "post_synthesis_intelligence", StageResult.FAILED,
-                                            "Integrity audit failed")
+                                            f"Integrity audit failed: {e}")
             await self._emit_event(session, intelligence_agent.name, AgentStatus.FAILED, str(e))
 
         # Determine final session status based on quality
@@ -544,9 +559,15 @@ class ResearchPipeline:
         if not session:
             return None
 
+        # Rank papers by research score before capping for bounded LLM context
+        ranked_papers = sorted(
+            session.papers.values(),
+            key=lambda p: p.research_score or 0.0,
+            reverse=True
+        )
         papers_summary = "\n".join(
             f"- [{p.id}] {p.title}: {p.abstract[:150] if p.abstract else ''}"
-            for p in list(session.papers.values())[:10]
+            for p in ranked_papers[:10]
         )
         methods_summary = "\n".join(
             f"- {m.model_architecture} on {m.dataset}" for m in session.methods if m.model_architecture

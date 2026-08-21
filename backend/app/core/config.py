@@ -12,19 +12,19 @@ class Settings(BaseSettings):
     # Gemini API / Model Routing
     gemini_api_key: str = Field(default="", description="Google Gemini API key")
     gemini_reasoning_model: str = Field(
-        default="gemini-2.5-pro",
+        default="gemini-3.7-flash",
         description="Reasoning Gemini model for planning, synthesis, novelty, and red-team",
         validation_alias="GEMINI_REASONING_MODEL"
     )
     gemini_fast_model: str = Field(
-        default="gemini-2.5-flash",
+        default="gemini-3.5-flash-lite",
         description="Fast Gemini model for triage, extraction, and candidate generation",
         validation_alias="GEMINI_FAST_MODEL"
     )
-    # Legacy alias support
+    # Legacy alias support (secondary fallback only)
     gemini_model: Optional[str] = Field(
         default=None,
-        description="Legacy model alias (falls back to reasoning model if set)",
+        description="Legacy model alias (only used as fallback if GEMINI_REASONING_MODEL is unset)",
         validation_alias="GEMINI_MODEL"
     )
 

@@ -23,10 +23,16 @@ class RetrievalAgent(BaseAgent):
     def name(self) -> str:
         return "Literature Discovery"
 
+    @property
+    def description(self) -> str:
+        return "Discovers academic literature, deduplicates by DOI/title, and computes relevance scores."
+
     async def execute(self, session: ResearchSession, **kwargs) -> None:
         """
-        Executes search, dedup, and ranking.
+        Executes search, dedup, and ranking with degradation tracking.
         """
+        from backend.app.models.research import StageResult
+
         if not session.plan or not session.plan.search_queries:
             logger.warning("No search queries found in plan. Falling back to main question.")
             queries = [session.question]
@@ -34,6 +40,7 @@ class RetrievalAgent(BaseAgent):
             queries = session.plan.search_queries[:6]
 
         all_papers = []
+        failed_providers = []
         for query in queries:
             for provider in self.providers:
                 try:
@@ -46,6 +53,7 @@ class RetrievalAgent(BaseAgent):
                     ))
                 except Exception as e:
                     logger.warning(f"Search failed ({provider.provider_name}): {e}")
+                    failed_providers.append(f"{provider.provider_name}: {e}")
             await asyncio.sleep(0.5)  # Rate limiting between queries
 
         # Deduplicate
@@ -59,6 +67,15 @@ class RetrievalAgent(BaseAgent):
         for p in selected:
             session.papers[p.id] = p
             
+        if len(selected) == 0:
+            self.record_stage(session, "retrieval", StageResult.FAILED,
+                              "No papers retrieved from academic providers — downstream analysis cannot proceed")
+        elif failed_providers:
+            self.record_stage(session, "retrieval", StageResult.PARTIAL,
+                              f"Retrieved {len(selected)} papers, but some searches failed ({', '.join(failed_providers[:2])})")
+        else:
+            self.record_stage(session, "retrieval", StageResult.SUCCESS)
+
         return len(all_papers), len(deduped), len(selected)
 
     def _deduplicate_papers(self, papers: list[Paper]) -> list[Paper]:

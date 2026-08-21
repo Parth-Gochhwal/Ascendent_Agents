@@ -900,16 +900,20 @@ def compute_evidence_strength(claim: Claim, evidence: list[Evidence],
     else:
         strength.directness = 0.2
 
-    # Source quality (based on citation count and venue)
-    if paper.citation_count and paper.citation_count > 50:
-        strength.source_quality = 0.8
-    elif paper.citation_count and paper.citation_count > 10:
-        strength.source_quality = 0.6
-    else:
-        strength.source_quality = 0.4
+    # Source quality (based on identifiable provenance, bibliographic completeness, and verified indexing)
+    quality = 0.4
+    if paper.doi:
+        quality += 0.2  # Identifiable, registered DOI
+    if paper.authors and len(paper.authors) >= 1:
+        quality += 0.1  # Verified authorship
     if paper.venue and any(top in paper.venue.lower() for top in
-                           ["nature", "science", "ieee trans", "acm", "icml", "neurips", "iclr"]):
-        strength.source_quality = min(1.0, strength.source_quality + 0.2)
+                           ["nature", "science", "ieee", "acm", "icml", "neurips", "iclr", "aaai", "acl", "cvpr"]):
+        quality += 0.2  # Peer-reviewed archival venue
+    elif paper.venue:
+        quality += 0.1  # Documented publication venue
+    if paper.full_text_available or paper.sections:
+        quality += 0.1  # Full text available for empirical verification
+    strength.source_quality = min(1.0, quality)
 
     # Methodological rigor
     analysis = session.analyses.get(paper.id)

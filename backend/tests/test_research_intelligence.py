@@ -778,6 +778,104 @@ class TestStageResultTracking:
         assert session.quality_state == "complete"
         assert len(session.quality_warnings) == 0
 
+    def test_candidate_cap_respects_scores_not_insertion_order(self):
+        """High-scoring pairs at the end of the input list must still make the top-N cap."""
+        # Create 10 weak/unrelated claim pairs inserted first
+        claims = []
+        papers = {}
+        for i in range(10):
+            pid = f"p_weak_{i}"
+            cid = f"c_weak_{i}"
+            papers[pid] = Paper(id=pid, title=f"Weak Paper {i}")
+            claims.append(Claim(id=cid, paper_id=pid, statement=f"Generic statement {i}", metric=None))
+
+        # Insert a high-scoring direct contradiction with opposing signals and same metric at the very end
+        papers["p_strong_a"] = Paper(id="p_strong_a", title="Strong Paper A", doi="10.1109/a")
+        papers["p_strong_b"] = Paper(id="p_strong_b", title="Strong Paper B", doi="10.1109/b")
+        claims.append(Claim(id="c_strong_a", paper_id="p_strong_a",
+                            statement="Transformer outperforms LSTM", metric="accuracy", evidence_value="98%"))
+        claims.append(Claim(id="c_strong_b", paper_id="p_strong_b",
+                            statement="LSTM outperforms Transformer", metric="accuracy", evidence_value="74%"))
+
+        # Request cap of 3 pairs (out of ~66 possible pairs)
+        candidates = ri.generate_contradiction_candidates(claims, papers, max_pairs=3)
+        assert len(candidates) <= 3
+        # The high-scoring pair from the very end MUST be #1 regardless of insertion position
+        top_pair = candidates[0]
+        top_ids = {top_pair[0].id, top_pair[1].id}
+        assert top_ids == {"c_strong_a", "c_strong_b"}
+
+    def test_red_team_llm_failure_marks_partial(self):
+        """When Red Team LLM fails, execution must mark PARTIAL and produce explicitly degraded results."""
+        import asyncio
+        from unittest.mock import AsyncMock
+        from backend.app.services.agents.red_team import RedTeamAgent
+        from backend.app.models.research import StageResult
+
+        failing_llm = AsyncMock()
+        failing_llm.structured_generate.side_effect = RuntimeError("LLM API overloaded")
+
+        agent = RedTeamAgent(failing_llm)
+        session = ResearchSession(question="Test question")
+        session.consensus = [ConsensusFinding(statement="GNNs are effective", status=ConsensusStatus.CONSENSUS)]
+
+        asyncio.run(agent.execute(session))
+
+        assert session.stage_results["red_team"] == StageResult.PARTIAL.value
+        assert session.quality_state == "degraded"
+        assert session.red_team is not None
+        assert "DEGRADED / FALLBACK" in session.red_team.adjudication
+        assert session.red_team.final_confidence == EvidenceConfidence.UNCERTAIN
+
+    def test_synthesis_partial_when_contradictions_fail(self):
+        """When contradiction analysis fails but consensus succeeds, stage must be PARTIAL."""
+        import asyncio
+        from unittest.mock import AsyncMock
+        from backend.app.services.agents.synthesis import SynthesisAgent
+        from backend.app.models.research import StageResult, ConsensusList
+
+        llm = AsyncMock()
+        # First call (contradictions) fails, second call (consensus) succeeds
+        llm.structured_generate.side_effect = [
+            RuntimeError("Contradiction model timeout"),
+            ConsensusList(findings=[ConsensusFinding(statement="Agreed finding")])
+        ]
+
+        agent = SynthesisAgent(llm)
+        session = ResearchSession(question="Test question")
+        session.claims = [
+            Claim(id="c1", paper_id="p1", statement="Claim A"),
+            Claim(id="c2", paper_id="p2", statement="Claim B"),
+        ]
+        session.papers = {"p1": Paper(id="p1", title="A"), "p2": Paper(id="p2", title="B")}
+
+        asyncio.run(agent.execute(session))
+
+        assert session.stage_results["synthesis"] == StageResult.PARTIAL.value
+        assert session.quality_state == "degraded"
+        assert len(session.consensus) == 1
+
+    def test_planning_llm_failure_marks_partial(self):
+        """When Planning LLM fails, fallback single-query plan is generated with PARTIAL stage status."""
+        import asyncio
+        from unittest.mock import AsyncMock
+        from backend.app.services.agents.planning import PlanningAgent
+        from backend.app.models.research import StageResult
+
+        failing_llm = AsyncMock()
+        failing_llm.structured_generate.side_effect = RuntimeError("Planning API error")
+
+        agent = PlanningAgent(failing_llm)
+        session = ResearchSession(question="How to scale GNNs?")
+
+        asyncio.run(agent.execute(session))
+
+        assert session.stage_results["planning"] == StageResult.PARTIAL.value
+        assert session.quality_state == "degraded"
+        assert session.plan is not None
+        assert session.plan.search_queries == ["How to scale GNNs?"]
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+

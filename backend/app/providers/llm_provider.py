@@ -97,9 +97,9 @@ class GeminiProvider(LLMProvider):
     def __init__(self):
         settings = get_settings()
         self.api_key = settings.gemini_api_key
-        # Resolve reasoning model (legacy gemini_model takes precedence if explicitly passed)
-        self.reasoning_model = settings.gemini_model or settings.gemini_reasoning_model
-        self.fast_model = settings.gemini_fast_model
+        # Resolve reasoning model (GEMINI_REASONING_MODEL takes primary precedence)
+        self.reasoning_model = settings.gemini_reasoning_model or settings.gemini_model or "gemini-3.7-flash"
+        self.fast_model = settings.gemini_fast_model or "gemini-3.5-flash-lite"
         self.cache = LLMCache(settings.cache_dir)
         self.rate_limiter = RateLimiter(settings.llm_rate_limit_per_minute)
         self.semaphore = asyncio.Semaphore(settings.max_concurrent_llm_calls)

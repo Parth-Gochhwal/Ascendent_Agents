@@ -15,22 +15,48 @@ class SynthesisAgent(BaseAgent):
     def name(self) -> str:
         return "Synthesis Engine"
 
+    @property
+    def description(self) -> str:
+        return "Adjudicates claim contradictions and aggregates cross-paper consensus clusters."
+
     async def execute(self, session: ResearchSession, **kwargs) -> None:
         """
-        Executes contradiction and consensus analysis.
+        Executes contradiction and consensus analysis with truthful degradation tracking.
         """
+        from backend.app.models.research import StageResult
+
+        contradictions_ok = False
+        consensus_ok = False
+        contradiction_err = None
+        consensus_err = None
+
         # Contradictions
         try:
             session.contradictions = await self._detect_contradictions(session)
+            contradictions_ok = True
         except Exception as e:
             logger.warning(f"Contradiction analysis failed: {e}")
+            contradiction_err = str(e)
             
         # Consensus
         try:
             session.consensus = await self._analyze_consensus(session)
+            consensus_ok = True
         except Exception as e:
             logger.warning(f"Consensus analysis failed: {e}")
+            consensus_err = str(e)
 
+        # Record truthful stage status
+        if contradictions_ok and consensus_ok:
+            self.record_stage(session, "synthesis", StageResult.SUCCESS)
+        elif contradictions_ok or consensus_ok:
+            failed_part = "consensus" if not consensus_ok else "contradictions"
+            err = consensus_err if not consensus_ok else contradiction_err
+            self.record_stage(session, "synthesis", StageResult.PARTIAL,
+                              f"Synthesis partially degraded ({failed_part} failed: {err})")
+        else:
+            self.record_stage(session, "synthesis", StageResult.FAILED,
+                              f"Synthesis failed completely (contradictions: {contradiction_err}, consensus: {consensus_err})")
 
     async def _detect_contradictions(self, session: ResearchSession):
         contradictions = []
@@ -40,16 +66,12 @@ class SynthesisAgent(BaseAgent):
 
         from backend.app.services import research_intelligence as ri
         
-        pairs_to_check = ri.generate_contradiction_candidates(claims, session.papers)
+        # ONE deterministic candidate-selection strategy: scores and ranks all cross-paper pairs before capping
+        pairs_to_check = ri.generate_contradiction_candidates(claims, session.papers, max_pairs=12)
         if not pairs_to_check:
-            # Fallback: check cross-paper pairs directly if very few claims
-            for i in range(len(claims)):
-                for j in range(i + 1, len(claims)):
-                    if claims[i].paper_id != claims[j].paper_id:
-                        pairs_to_check.append((claims[i], claims[j]))
-            # Fallback cap — only reached when generate_contradiction_candidates returns empty
-            pairs_to_check = pairs_to_check[:12]
+            return contradictions
 
+        pair_errors = []
         for claim_a, claim_b in pairs_to_check:
             paper_a = session.papers.get(claim_a.paper_id)
             paper_b = session.papers.get(claim_b.paper_id)
@@ -78,6 +100,10 @@ class SynthesisAgent(BaseAgent):
                     contradictions.append(c)
             except Exception as e:
                 logger.warning(f"Failed to analyze contradiction pair: {e}")
+                pair_errors.append(str(e))
+
+        if pair_errors and len(pair_errors) == len(pairs_to_check):
+            raise RuntimeError(f"Contradiction adjudication failed on all {len(pairs_to_check)} candidate pairs: {pair_errors[0]}")
 
         return contradictions
 

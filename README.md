@@ -131,9 +131,9 @@ D:/Ascendent_Agents/
 |----------|-------------|---------|
 | `DEMO_MODE` | Use synthetic corpus | `true` |
 | `GEMINI_API_KEY` | Google Gemini API key | - |
-| `GEMINI_REASONING_MODEL` | Reasoning model (synthesis, novelty, red-team) | `gemini-2.5-pro` |
-| `GEMINI_FAST_MODEL` | Fast model (triage, extraction, parsing) | `gemini-2.5-flash` |
-| `GEMINI_MODEL` | Legacy model alias | `gemini-2.5-pro` |
+| `GEMINI_REASONING_MODEL` | Reasoning model (synthesis, novelty, red-team) | `gemini-3.7-flash` |
+| `GEMINI_FAST_MODEL` | Fast model (triage, extraction, parsing) | `gemini-3.5-flash-lite` |
+| `GEMINI_MODEL` | Legacy model alias (fallback) | `gemini-3.7-flash` |
 | `OPENALEX_EMAIL` | OpenAlex polite pool | - |
 | `SEMANTIC_SCHOLAR_API_KEY` | S2 API key | - |
 | `CROSSREF_EMAIL` | Crossref polite pool | - |

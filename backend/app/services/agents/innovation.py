@@ -55,25 +55,32 @@ class InnovationAgent(BaseAgent):
 
     async def execute(self, session: ResearchSession, **kwargs) -> None:
         """
-        Executes gap detection, novelty analysis, and experiment design.
+        Executes gap detection, novelty analysis, and experiment design with truthful degradation tracking.
         """
+        from backend.app.models.research import StageResult
+
+        failed_phases = []
+
         # Phase 1: Research Gaps
         try:
             session.gaps = await self._detect_gaps(session)
         except Exception as e:
             logger.warning(f"Gap detection failed: {e}")
+            failed_phases.append(f"gaps: {e}")
             
         # Phase 2: Missing Experiments (Cartesian holes)
         try:
             session.missing_experiments = await self._detect_missing_experiments(session)
         except Exception as e:
             logger.warning(f"Missing experiment detection failed: {e}")
+            failed_phases.append(f"missing_experiments: {e}")
 
         # Phase 3: Novelty Assessment against literature corpus
         try:
             session.novelty = await self._assess_novelty(session)
         except Exception as e:
             logger.warning(f"Novelty analysis failed: {e}")
+            failed_phases.append(f"novelty: {e}")
             
         # Phase 4: Experiment Design grounded in ranked gaps, dead ends, and reproducibility
         if session.gaps:
@@ -81,6 +88,16 @@ class InnovationAgent(BaseAgent):
                 session.experiment = await self._design_experiment(session)
             except Exception as e:
                 logger.warning(f"Experiment design failed: {e}")
+                failed_phases.append(f"experiment_design: {e}")
+
+        if not failed_phases:
+            self.record_stage(session, "innovation", StageResult.SUCCESS)
+        elif len(failed_phases) < 4:
+            self.record_stage(session, "innovation", StageResult.PARTIAL,
+                              f"Innovation partially degraded ({', '.join(failed_phases)})")
+        else:
+            self.record_stage(session, "innovation", StageResult.FAILED,
+                              f"Innovation failed completely ({', '.join(failed_phases)})")
 
     async def _detect_gaps(self, session: ResearchSession) -> list:
         # Build context from highest-value evidence, not positional slices

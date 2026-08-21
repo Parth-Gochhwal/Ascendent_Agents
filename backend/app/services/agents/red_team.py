@@ -49,6 +49,8 @@ class RedTeamAgent(BaseAgent):
             evidence=evidence,
         )
         
+        from backend.app.models.research import StageResult
+
         try:
             result = await self.llm.structured_generate(prompt, RedTeamResult, system_prompt=SYSTEM_PROMPT, use_fast=False)
             result.conclusion_challenged = conclusions[:200]
@@ -71,12 +73,23 @@ class RedTeamAgent(BaseAgent):
                     ))
 
             session.red_team = result
+            self.record_stage(session, "red_team", StageResult.SUCCESS)
         except Exception as e:
-            logger.warning(f"Red team analysis failed: {e}")
+            logger.warning(f"Red team LLM analysis failed: {e}")
             session.red_team = RedTeamResult(
                 conclusion_challenged=conclusions[:200],
-                challenges=["Automated red team review encountered an evaluation limit."],
-                final_confidence=EvidenceConfidence.MEDIUM,
-                adjudication="Manual critical review recommended for high-stakes decisions."
+                challenges=["Automated adversarial LLM review was unavailable; deterministic safety checks applied."],
+                findings=[
+                    RedTeamFinding(
+                        severity=RedTeamSeverity.MEDIUM,
+                        finding_type=RedTeamFindingType.REPRODUCIBILITY_WEAKNESS,
+                        description="Adversarial LLM review was unavailable. Findings lack independent critique.",
+                        recommended_correction="Conduct manual adversarial critique for critical claims."
+                    )
+                ],
+                final_confidence=EvidenceConfidence.UNCERTAIN,
+                adjudication="[DEGRADED / FALLBACK] Automated adversarial LLM review was unavailable due to an evaluation error. Basic heuristic checks applied; manual critical review recommended for high-stakes decisions."
             )
+            self.record_stage(session, "red_team", StageResult.PARTIAL,
+                              f"Adversarial LLM review was unavailable ({e}); deterministic fallback safety checks applied.")
 

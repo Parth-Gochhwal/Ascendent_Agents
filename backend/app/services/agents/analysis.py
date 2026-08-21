@@ -15,13 +15,22 @@ class AnalysisAgent(BaseAgent):
     def name(self) -> str:
         return "Paper Intelligence"
 
+    @property
+    def description(self) -> str:
+        return "Extracts structured scientific claims, methods, and quantitative evidence from literature."
+
     async def execute(self, session: ResearchSession, **kwargs) -> None:
         """
-        Executes analysis on all selected papers in the session.
-        Note: The orchestrator handles the progress emitting, so this just processes.
+        Executes analysis on all selected papers in the session with truthful degradation tracking.
         """
+        from backend.app.models.research import StageResult
+
         selected = list(session.papers.values())
-        
+        if not selected:
+            self.record_stage(session, "analysis", StageResult.SKIPPED, "No papers available for analysis")
+            return
+
+        failed_papers = []
         for paper in selected:
             # Skip if already analyzed (e.g. from upload)
             if paper.id in session.analyses:
@@ -32,10 +41,10 @@ class AnalysisAgent(BaseAgent):
                 session.analyses[paper.id] = analysis
             except Exception as e:
                 logger.warning(f"Analysis failed for {paper.title[:50]}: {e}")
+                failed_papers.append(paper.id)
 
-        # Extract Claims & Evidence (Phase 5 in old pipeline)
+        # Extract Claims & Evidence
         for analysis in session.analyses.values():
-            # Avoid duplicating if already added
             for c in analysis.claims:
                 if c not in session.claims:
                     session.claims.append(c)
@@ -45,6 +54,15 @@ class AnalysisAgent(BaseAgent):
             for m in analysis.methods:
                 if m not in session.methods:
                     session.methods.append(m)
+
+        if len(session.analyses) == len(selected) and session.claims:
+            self.record_stage(session, "analysis", StageResult.SUCCESS)
+        elif len(session.analyses) > 0:
+            self.record_stage(session, "analysis", StageResult.PARTIAL,
+                              f"Analyzed {len(session.analyses)}/{len(selected)} papers ({len(failed_papers)} failed)")
+        else:
+            self.record_stage(session, "analysis", StageResult.FAILED,
+                              "Zero papers could be successfully analyzed")
 
     async def _analyze_paper(self, paper) -> PaperAnalysis:
         full_text = ""
