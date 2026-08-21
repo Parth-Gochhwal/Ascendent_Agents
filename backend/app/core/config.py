@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     # Rate Limiting
     max_papers_deep_analysis: int = Field(default=15, description="Max papers for deep analysis")
     max_concurrent_llm_calls: int = Field(default=3, description="Max concurrent LLM calls")
-    llm_rate_limit_per_minute: int = Field(default=30, description="LLM requests per minute")
+    llm_rate_limit_per_minute: int = Field(default=15, description="LLM requests per minute")
 
     # Paths
     data_dir: Path = Field(default=Path("data"), description="Data directory")

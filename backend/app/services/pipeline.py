@@ -18,7 +18,9 @@ from backend.app.models.research import (
     ExperimentProposal, RedTeamResult, AuditResult, MissingExperiment,
     ContradictionType, ConsensusStatus, EvidenceConfidence, Availability,
     Author, SearchResult, WhyExplanation, WhyEvidenceChainItem, TimelineMilestone, new_id,
-    ClaimList, ConsensusList, GapList, MissingExperimentList
+    ClaimList, ConsensusList, GapList, MissingExperimentList,
+    DeadEnd, ReproducibilityProfile, ClaimPropagation, CitationEchoCluster,
+    ResearchGraph, EvidenceStrength,
 )
 from backend.app.providers.llm_provider import get_llm_provider, reset_llm_provider
 from backend.app.providers.academic import (
@@ -26,6 +28,11 @@ from backend.app.providers.academic import (
 )
 from backend.app.prompts.templates import *
 from backend.app.services.demo_data import *
+from backend.app.services import research_intelligence as ri
+from backend.app.services.agents import (
+    PlanningAgent, RetrievalAgent, AnalysisAgent,
+    IntelligenceAgent, SynthesisAgent, InnovationAgent, RedTeamAgent
+)
 
 logger = logging.getLogger(__name__)
 
@@ -210,7 +217,50 @@ class ResearchPipeline:
                                f"{sum(1 for c in session.consensus if c.status == ConsensusStatus.CONSENSUS)} consensus, "
                                f"{sum(1 for c in session.consensus if c.status == ConsensusStatus.CONTESTED)} contested")
 
-        # Phase 9: Gaps
+        # Phase 9: Dead-End Detection
+        session.status = SessionStatus.ANALYZING_DEAD_ENDS
+        await self._emit_event(session, "Dead-End Atlas", AgentStatus.RUNNING,
+                               "Identifying research dead ends...")
+        await asyncio.sleep(0.8)
+        session.dead_ends = get_demo_dead_ends()
+        await self._emit_event(session, "Dead-End Atlas", AgentStatus.COMPLETED,
+                               f"Identified {len(session.dead_ends)} dead ends or limited approaches",
+                               detail=f"Status: {', '.join(f'{d.approach} ({d.status.value})' for d in session.dead_ends)}")
+
+        # Phase 10: Reproducibility Profiling
+        session.status = SessionStatus.CHECKING_REPRODUCIBILITY
+        await self._emit_event(session, "Reproducibility Profiler", AgentStatus.RUNNING,
+                               "Assessing reproducibility for analyzed papers...")
+        await asyncio.sleep(0.8)
+        session.reproducibility_profiles = get_demo_reproducibility_profiles()
+        avg_repro = sum(p.completeness_score for p in session.reproducibility_profiles.values()) / max(len(session.reproducibility_profiles), 1)
+        await self._emit_event(session, "Reproducibility Profiler", AgentStatus.COMPLETED,
+                               f"Profiled {len(session.reproducibility_profiles)} papers. Average completeness: {avg_repro:.0%}")
+
+        # Phase 11: ClaimLine Tracking
+        await self._emit_event(session, "ClaimLine Tracker", AgentStatus.RUNNING,
+                               "Tracking claim propagation through literature...")
+        await asyncio.sleep(0.6)
+        session.claim_propagations = get_demo_claim_propagations()
+        await self._emit_event(session, "ClaimLine Tracker", AgentStatus.COMPLETED,
+                               f"Tracked {len(session.claim_propagations)} claim propagation chains",
+                               detail=f"Types: {', '.join(set(p.relationship_type.value for p in session.claim_propagations))}")
+
+        # Phase 12: Citation Echo Detection
+        await self._emit_event(session, "Citation Echo Detector", AgentStatus.RUNNING,
+                               "Detecting citation echo chambers...")
+        await asyncio.sleep(0.6)
+        session.citation_echoes = get_demo_citation_echoes()
+        if session.citation_echoes:
+            echo_summary = "; ".join(f"'{e.claim_statement[:50]}...' ({e.independent_support_count}/{e.total_support_count} independent)" for e in session.citation_echoes)
+            await self._emit_event(session, "Citation Echo Detector", AgentStatus.COMPLETED,
+                                   f"Detected {len(session.citation_echoes)} echo cluster(s)",
+                                   detail=echo_summary)
+        else:
+            await self._emit_event(session, "Citation Echo Detector", AgentStatus.COMPLETED,
+                                   "No citation echo chambers detected")
+
+        # Phase 13: Gaps
         session.status = SessionStatus.DETECTING_GAPS
         await self._emit_event(session, "Gap Detector", AgentStatus.RUNNING,
                                "Identifying research gaps...")
@@ -220,7 +270,7 @@ class ResearchPipeline:
         await self._emit_event(session, "Gap Detector", AgentStatus.COMPLETED,
                                f"Identified {len(session.gaps)} potential research gaps and {len(session.missing_experiments)} missing experiments")
 
-        # Phase 10: Novelty
+        # Phase 14: Novelty
         session.status = SessionStatus.ANALYZING_NOVELTY
         await self._emit_event(session, "Novelty Analyzer", AgentStatus.RUNNING,
                                "Evaluating novelty of potential directions...")
@@ -229,7 +279,7 @@ class ResearchPipeline:
         await self._emit_event(session, "Novelty Analyzer", AgentStatus.COMPLETED,
                                f"Assessment: {session.novelty.assessment}")
 
-        # Phase 11: Experiment Design
+        # Phase 15: Experiment Design
         session.status = SessionStatus.DESIGNING_EXPERIMENT
         await self._emit_event(session, "Experiment Designer", AgentStatus.RUNNING,
                                "Designing experiment for top research gap...")
@@ -238,16 +288,19 @@ class ResearchPipeline:
         await self._emit_event(session, "Experiment Designer", AgentStatus.COMPLETED,
                                "Generated experiment proposal")
 
-        # Phase 12: Red Team
+        # Phase 16: Red Team
         session.status = SessionStatus.RED_TEAM
         await self._emit_event(session, "Red Team", AgentStatus.RUNNING,
                                "Challenging conclusions...")
         await asyncio.sleep(1.2)
         session.red_team = get_demo_red_team()
+        session.red_team.findings = get_demo_red_team_findings()
         await self._emit_event(session, "Red Team", AgentStatus.COMPLETED,
-                               f"Identified {len(session.red_team.challenges)} challenges. Confidence: {session.red_team.final_confidence.value}")
+                               f"Identified {len(session.red_team.challenges)} challenges, "
+                               f"{len(session.red_team.findings)} structured findings. "
+                               f"Confidence: {session.red_team.final_confidence.value}")
 
-        # Phase 13: Audit
+        # Phase 17: Audit
         session.status = SessionStatus.AUDITING
         await self._emit_event(session, "Integrity Auditor", AgentStatus.RUNNING,
                                "Auditing research integrity...")
@@ -256,184 +309,134 @@ class ResearchPipeline:
         await self._emit_event(session, "Integrity Auditor", AgentStatus.COMPLETED,
                                f"Claims checked: {session.audit.total_claims}, "
                                f"With evidence: {session.audit.claims_with_evidence_links}, "
-                               f"Integrity: {session.audit.overall_integrity}")
+                               f"Integrity: {session.audit.overall_integrity}, "
+                               f"Findings: {len(session.audit.integrity_findings)}")
 
         # Done
         session.status = SessionStatus.REPORT_READY
         session.update_stats()
         await self._emit_event(session, "Pipeline", AgentStatus.COMPLETED,
                                "Research complete! Dossier ready.",
-                               detail=f"Analyzed {len(session.papers)} papers, extracted {len(session.claims)} claims")
+                               detail=f"Analyzed {len(session.papers)} papers, extracted {len(session.claims)} claims, "
+                                      f"tracked {len(session.claim_propagations)} propagations, "
+                                      f"detected {len(session.citation_echoes)} echo chambers, "
+                                      f"identified {len(session.dead_ends)} dead ends")
 
     async def _run_live_pipeline(self, session: ResearchSession):
-        """Run the actual live research pipeline with real APIs."""
+        """Run the actual live research pipeline with real APIs using discrete agents."""
+        
+        # Instantiate agents
+        planning_agent = PlanningAgent(self.llm)
+        retrieval_agent = RetrievalAgent(self.llm, self.providers, self.settings.max_papers_deep_analysis)
+        analysis_agent = AnalysisAgent(self.llm)
+        intelligence_agent = IntelligenceAgent(self.llm)
+        synthesis_agent = SynthesisAgent(self.llm)
+        innovation_agent = InnovationAgent(self.llm)
+        red_team_agent = RedTeamAgent(self.llm)
+
         # Phase 1: Planning
         session.status = SessionStatus.PLANNING
-        await self._emit_event(session, "Research Planner", AgentStatus.RUNNING,
-                               "Analyzing research question...")
+        await self._emit_event(session, planning_agent.name, AgentStatus.RUNNING, "Analyzing research question...")
         try:
-            session.plan = await self._plan_research(session.question)
-            await self._emit_event(session, "Research Planner", AgentStatus.COMPLETED,
-                                   f"Decomposed into {len(session.plan.subquestions)} subquestions, "
-                                   f"{len(session.plan.search_queries)} search queries")
+            await planning_agent.execute(session)
+            await self._emit_event(session, planning_agent.name, AgentStatus.COMPLETED,
+                                   f"Decomposed into {len(session.plan.subquestions)} subquestions")
         except Exception as e:
             logger.error(f"Planning failed: {e}")
-            await self._emit_event(session, "Research Planner", AgentStatus.FAILED, str(e))
+            await self._emit_event(session, planning_agent.name, AgentStatus.FAILED, str(e))
             session.plan = ResearchPlan(
                 normalized_question=session.question,
                 research_objective=f"Investigate: {session.question}",
                 search_queries=[session.question],
             )
 
-        # Phase 2: Literature Discovery
+        # Phase 2 & 3: Literature Discovery & Ranking
         session.status = SessionStatus.DISCOVERING
-        await self._emit_event(session, "Literature Discovery", AgentStatus.RUNNING,
-                               "Searching academic sources...")
-        all_papers = []
-        for query in session.plan.search_queries[:6]:
-            for provider in self.providers:
-                try:
-                    results = await provider.search(query, max_results=15)
-                    all_papers.extend(results)
-                    session.searches.append(SearchResult(
-                        query=query, provider=provider.provider_name,
-                        papers_found=len(results),
-                        paper_ids=[p.id for p in results]
-                    ))
-                except Exception as e:
-                    logger.warning(f"Search failed ({provider.provider_name}): {e}")
-            await asyncio.sleep(0.5)  # Rate limiting between queries
+        await self._emit_event(session, retrieval_agent.name, AgentStatus.RUNNING, "Searching and ranking literature...")
+        try:
+            found, deduped, selected = await retrieval_agent.execute(session)
+            await self._emit_event(session, retrieval_agent.name, AgentStatus.COMPLETED,
+                                   f"Found: {found} → Dedup: {deduped} → Selected: {selected}")
+        except Exception as e:
+            logger.error(f"Retrieval failed: {e}")
+            await self._emit_event(session, retrieval_agent.name, AgentStatus.FAILED, str(e))
 
-        initial_count = len(all_papers)
-        await self._emit_event(session, "Literature Discovery", AgentStatus.COMPLETED,
-                               f"Found {initial_count} papers from {len(self.providers)} sources")
-
-        # Phase 3: Dedup & Ranking
-        session.status = SessionStatus.RANKING
-        await self._emit_event(session, "Relevance Engine", AgentStatus.RUNNING,
-                               "Deduplicating and ranking...")
-        deduped = self._deduplicate_papers(all_papers)
-        ranked = self._rank_papers(deduped, session.question)
-        selected = ranked[:self.settings.max_papers_deep_analysis]
-        for p in selected:
-            session.papers[p.id] = p
-        await self._emit_event(session, "Relevance Engine", AgentStatus.COMPLETED,
-                               f"Dedup: {initial_count} → {len(deduped)} → Selected: {len(selected)}")
-
-        # Phase 4: Deep Analysis
+        # Phase 4 & 5: Deep Analysis & Evidence Extraction
         session.status = SessionStatus.ANALYZING
-        for i, paper in enumerate(selected):
-            try:
-                await self._emit_event(session, "Paper Intelligence", AgentStatus.RUNNING,
-                                       f"Analyzing paper {i+1}/{len(selected)}",
-                                       detail=paper.title, progress=(i+1)/len(selected))
-                analysis = await self._analyze_paper(paper)
-                session.analyses[paper.id] = analysis
-            except Exception as e:
-                logger.warning(f"Analysis failed for {paper.title[:50]}: {e}")
-        await self._emit_event(session, "Paper Intelligence", AgentStatus.COMPLETED,
-                               f"Analyzed {len(session.analyses)} papers")
+        await self._emit_event(session, analysis_agent.name, AgentStatus.RUNNING, "Deeply analyzing papers...")
+        try:
+            await analysis_agent.execute(session)
+            await self._emit_event(session, analysis_agent.name, AgentStatus.COMPLETED,
+                                   f"Analyzed {len(session.analyses)} papers, Extracted {len(session.claims)} claims")
+        except Exception as e:
+            logger.error(f"Analysis failed: {e}")
+            await self._emit_event(session, analysis_agent.name, AgentStatus.FAILED, str(e))
 
-        # Phase 5: Claims & Evidence
-        session.status = SessionStatus.EXTRACTING_EVIDENCE
-        await self._emit_event(session, "Evidence Extraction", AgentStatus.RUNNING,
-                               "Extracting claims and evidence...")
-        for analysis in session.analyses.values():
-            session.claims.extend(analysis.claims)
-            session.evidence.extend(analysis.evidence)
-            session.methods.extend(analysis.methods)
-        await self._emit_event(session, "Evidence Extraction", AgentStatus.COMPLETED,
-                               f"Extracted {len(session.claims)} claims, {len(session.evidence)} evidence items")
-
-        # Phase 6: Citations
+        # Phase 6 & Pre-Synthesis Intelligence
         session.status = SessionStatus.BUILDING_GRAPH
-        await self._emit_event(session, "Citation Intelligence", AgentStatus.RUNNING,
-                               "Building citation graph...")
-        # Build citation edges from detected references
-        session.citations = self._build_citation_graph(session)
-        await self._emit_event(session, "Citation Intelligence", AgentStatus.COMPLETED,
-                               f"Mapped {len(session.citations)} citation relationships")
+        await self._emit_event(session, intelligence_agent.name, AgentStatus.RUNNING, "Building citation graph and pre-synthesis metrics...")
+        try:
+            await intelligence_agent.execute(session, phase="pre_synthesis")
+            await self._emit_event(session, intelligence_agent.name, AgentStatus.COMPLETED,
+                                   f"Mapped {len(session.citations)} citations, {len(session.dead_ends)} dead ends")
+        except Exception as e:
+            logger.error(f"Pre-synthesis intelligence failed: {e}")
+            await self._emit_event(session, intelligence_agent.name, AgentStatus.FAILED, str(e))
 
-        # Phase 7: Contradictions
+        # Phase 7 & 8: Contradictions & Consensus
         session.status = SessionStatus.ANALYZING_CONTRADICTIONS
-        await self._emit_event(session, "Contradiction Engine", AgentStatus.RUNNING,
-                               "Analyzing contradictions...")
+        await self._emit_event(session, synthesis_agent.name, AgentStatus.RUNNING, "Synthesizing evidence...")
         try:
-            session.contradictions = await self._detect_contradictions(session)
+            await synthesis_agent.execute(session)
+            await self._emit_event(session, synthesis_agent.name, AgentStatus.COMPLETED,
+                                   f"Found {len(session.contradictions)} conflicts, {len(session.consensus)} clusters")
         except Exception as e:
-            logger.warning(f"Contradiction analysis failed: {e}")
-        await self._emit_event(session, "Contradiction Engine", AgentStatus.COMPLETED,
-                               f"Found {len(session.contradictions)} potential conflicts")
+            logger.error(f"Synthesis failed: {e}")
+            await self._emit_event(session, synthesis_agent.name, AgentStatus.FAILED, str(e))
 
-        # Phase 8: Consensus
-        session.status = SessionStatus.SYNTHESIZING_CONSENSUS
-        await self._emit_event(session, "Consensus Engine", AgentStatus.RUNNING,
-                               "Synthesizing consensus...")
-        try:
-            session.consensus = await self._analyze_consensus(session)
-        except Exception as e:
-            logger.warning(f"Consensus analysis failed: {e}")
-        await self._emit_event(session, "Consensus Engine", AgentStatus.COMPLETED,
-                               f"Identified {len(session.consensus)} findings")
-
-        # Phase 9: Research Gaps
+        # Phase 14-16: Innovation (Gaps, Novelty, Experiments)
         session.status = SessionStatus.DETECTING_GAPS
-        await self._emit_event(session, "Gap Detector", AgentStatus.RUNNING,
-                               "Detecting research gaps...")
+        await self._emit_event(session, innovation_agent.name, AgentStatus.RUNNING, "Detecting gaps and designing experiments...")
         try:
-            session.gaps = await self._detect_gaps(session)
+            await innovation_agent.execute(session)
+            await self._emit_event(session, innovation_agent.name, AgentStatus.COMPLETED,
+                                   f"Identified {len(session.gaps)} gaps, {len(session.missing_experiments)} missing experiments")
         except Exception as e:
-            logger.warning(f"Gap detection failed: {e}")
-        await self._emit_event(session, "Gap Detector", AgentStatus.COMPLETED,
-                               f"Identified {len(session.gaps)} gaps")
+            logger.error(f"Innovation failed: {e}")
+            await self._emit_event(session, innovation_agent.name, AgentStatus.FAILED, str(e))
 
-        # Phase 10+: Missing Experiments, Novelty, Experiment, Red Team, Audit
-        session.status = SessionStatus.ANALYZING_NOVELTY
-        await self._emit_event(session, "Experiment Detector", AgentStatus.RUNNING,
-                               "Detecting missing experiments...")
-        try:
-            session.missing_experiments = await self._detect_missing_experiments(session)
-        except Exception as e:
-            logger.warning(f"Missing experiment detection failed: {e}")
-        await self._emit_event(session, "Experiment Detector", AgentStatus.COMPLETED,
-                               f"Identified {len(session.missing_experiments)} missing experiments")
-
-        await self._emit_event(session, "Novelty Analyzer", AgentStatus.RUNNING,
-                               "Evaluating potential research directions...")
-        await self._emit_event(session, "Novelty Analyzer", AgentStatus.COMPLETED,
-                               "Novelty analysis available on demand")
-
-        session.status = SessionStatus.DESIGNING_EXPERIMENT
-        if session.gaps:
-            try:
-                session.experiment = await self._design_experiment(session)
-                await self._emit_event(session, "Experiment Designer", AgentStatus.COMPLETED,
-                                       "Experiment proposal generated")
-            except Exception as e:
-                logger.warning(f"Experiment design failed: {e}")
-                await self._emit_event(session, "Experiment Designer", AgentStatus.FAILED, str(e))
-        else:
-            await self._emit_event(session, "Experiment Designer", AgentStatus.SKIPPED,
-                                   "No gaps to address")
-
+        # Phase 17: Red Team
         session.status = SessionStatus.RED_TEAM
+        await self._emit_event(session, red_team_agent.name, AgentStatus.RUNNING, "Adversarial review of findings...")
         try:
-            session.red_team = await self._red_team(session)
-            await self._emit_event(session, "Red Team", AgentStatus.COMPLETED,
-                                   f"Challenged findings. Confidence: {session.red_team.final_confidence.value}")
+            await red_team_agent.execute(session)
+            confidence = session.red_team.final_confidence.value if session.red_team else "N/A"
+            await self._emit_event(session, red_team_agent.name, AgentStatus.COMPLETED,
+                                   f"Challenged findings. Confidence: {confidence}")
         except Exception as e:
-            logger.warning(f"Red team failed: {e}")
-            await self._emit_event(session, "Red Team", AgentStatus.FAILED, str(e))
+            logger.error(f"Red team failed: {e}")
+            await self._emit_event(session, red_team_agent.name, AgentStatus.FAILED, str(e))
 
+        # Phase 18: Post-Synthesis Intelligence (Audit, Independence weighting)
         session.status = SessionStatus.AUDITING
-        session.audit = self._run_audit(session)
-        await self._emit_event(session, "Integrity Auditor", AgentStatus.COMPLETED,
-                               f"Audit: {session.audit.overall_integrity}")
+        await self._emit_event(session, intelligence_agent.name, AgentStatus.RUNNING, "Finalizing integrity audit...")
+        try:
+            await intelligence_agent.execute(session, phase="post_synthesis")
+            integrity = session.audit.overall_integrity if session.audit else "Unknown"
+            await self._emit_event(session, intelligence_agent.name, AgentStatus.COMPLETED,
+                                   f"Audit complete. Integrity: {integrity}")
+        except Exception as e:
+            logger.error(f"Post-synthesis intelligence failed: {e}")
+            await self._emit_event(session, intelligence_agent.name, AgentStatus.FAILED, str(e))
 
         session.status = SessionStatus.REPORT_READY
         session.update_stats()
         await self._emit_event(session, "Pipeline", AgentStatus.COMPLETED,
-                               "Research complete!")
+                               "Research complete!",
+                               detail=f"Analyzed {len(session.papers)} papers, extracted {len(session.claims)} claims, "
+                                      f"tracked {len(session.claim_propagations)} propagations, "
+                                      f"detected {len(session.citation_echoes)} echo chambers, "
+                                      f"identified {len(session.dead_ends)} dead ends")
 
     # ─── Agent Implementations ───────────────────────────────
 
@@ -880,6 +883,123 @@ class ResearchPipeline:
                 ],
                 uncertainty_analysis="High empirical convergence across tested conditions; however, caveats remain regarding generalizability to domains not explicitly tested in the cited literature.",
                 conflicting_evidence=[f"Dissenting studies: {len(item.dissenting_paper_ids)}"] if item.dissenting_paper_ids else []
+            )
+
+        elif target_type == "dead_end":
+            item = next((d for d in session.dead_ends if d.id == target_id), None)
+            if not item:
+                return None
+            evidence_chain = []
+            for pid in item.supporting_papers:
+                p = session.papers.get(pid)
+                if p:
+                    evidence_chain.append(WhyEvidenceChainItem(
+                        claim=f"Demonstrates limitations of {item.approach}",
+                        evidence=f"Used as baseline and/or documented failure in {p.title}",
+                        source_paper_id=p.id,
+                        source_paper_title=p.title,
+                        doi_or_url=p.doi or p.url,
+                        confidence=item.confidence
+                    ))
+            return WhyExplanation(
+                target_type="dead_end",
+                target_id=target_id,
+                target_statement=f"Dead-End Approach: {item.approach}",
+                confidence=item.confidence,
+                evidence_chain=evidence_chain,
+                reasoning_factors=[
+                    f"Status: {item.status.value.replace('_', ' ').title()}",
+                    item.description,
+                    f"Failure conditions: {', '.join(item.failure_conditions)}",
+                    f"Observed across {item.attempt_count} independent papers"
+                ],
+                uncertainty_analysis="This approach may still succeed under untested conditions. See success_conditions_if_any for potential exceptions.",
+                conflicting_evidence=item.success_conditions_if_any,
+                counter_hypotheses=[f"Alternative approaches recommended: {', '.join(item.alternative_directions)}"]
+            )
+
+        elif target_type == "claim_propagation":
+            item = next((p for p in session.claim_propagations if p.id == target_id), None)
+            if not item:
+                return None
+            s_paper = session.papers.get(item.source_paper_id)
+            d_paper = session.papers.get(item.derived_paper_id)
+            return WhyExplanation(
+                target_type="claim_propagation",
+                target_id=target_id,
+                target_statement=f"ClaimLine: {item.relationship_type.value.replace('_', ' ').title()} Propagation",
+                confidence=item.confidence,
+                evidence_chain=[
+                    WhyEvidenceChainItem(
+                        claim="Original Context",
+                        evidence=f"Conditions: {', '.join(item.source_conditions)}",
+                        source_paper_id=item.source_paper_id,
+                        source_paper_title=s_paper.title if s_paper else "Unknown",
+                        doi_or_url=s_paper.doi or s_paper.url if s_paper else None,
+                        confidence=item.evidence_strength
+                    ),
+                    WhyEvidenceChainItem(
+                        claim="Derived Context",
+                        evidence=f"Conditions: {', '.join(item.derived_conditions)}",
+                        source_paper_id=item.derived_paper_id,
+                        source_paper_title=d_paper.title if d_paper else "Unknown",
+                        doi_or_url=d_paper.doi or d_paper.url if d_paper else None,
+                        confidence=item.confidence
+                    )
+                ],
+                reasoning_factors=[
+                    f"Scope change detected: {item.scope_change}",
+                    item.explanation
+                ],
+                uncertainty_analysis="Analysis based on explicit textual conditions reported in the respective papers. Implicit conditions may not be captured."
+            )
+
+        elif target_type == "citation_echo":
+            item = next((e for e in session.citation_echoes if e.id == target_id), None)
+            if not item:
+                return None
+            return WhyExplanation(
+                target_type="citation_echo",
+                target_id=target_id,
+                target_statement=f"Citation Echo: {item.claim_statement[:60]}...",
+                confidence=EvidenceConfidence.HIGH,
+                evidence_chain=[
+                    WhyEvidenceChainItem(
+                        claim="Originating Source",
+                        evidence=f"Originates from {item.originating_paper_title}",
+                        source_paper_id=item.originating_paper_id,
+                        source_paper_title=item.originating_paper_title,
+                        confidence=EvidenceConfidence.HIGH
+                    )
+                ],
+                reasoning_factors=[
+                    item.explanation,
+                    f"Total supporting papers: {item.total_support_count}",
+                    f"Independent supporting papers: {item.independent_support_count}",
+                    f"Citation dependency depth: {item.citation_dependency_depth}",
+                    f"Independence weight (0-1): {item.independence_weight}"
+                ],
+                uncertainty_analysis="A low independence weight indicates that the apparent consensus is largely derivative, tracing back to one or very few original sources."
+            )
+
+        elif target_type == "reproducibility":
+            item = session.reproducibility_profiles.get(target_id)
+            if not item:
+                return None
+            paper = session.papers.get(target_id)
+            return WhyExplanation(
+                target_type="reproducibility",
+                target_id=target_id,
+                target_statement=f"Reproducibility Profile for: {paper.title if paper else target_id}",
+                confidence=EvidenceConfidence.HIGH,
+                evidence_chain=[],
+                reasoning_factors=[
+                    f"Completeness Score: {item.completeness_score:.0%}",
+                    item.explanation,
+                    f"Missing components: {', '.join(item.missing_components) if item.missing_components else 'None'}",
+                    f"Risk factors: {'; '.join(item.risk_factors) if item.risk_factors else 'None identified'}"
+                ],
+                uncertainty_analysis="Deterministic heuristic based on presence/absence of metadata fields and code/data links. Subjective code quality is not evaluated."
             )
 
         elif target_type == "gap":

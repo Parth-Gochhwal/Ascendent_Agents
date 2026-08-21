@@ -201,7 +201,7 @@ async def get_methods(session_id: str):
 @router.get("/research/session/{session_id}/why")
 async def get_why_explanation(
     session_id: str,
-    target_type: str = Query(..., description="contradiction, consensus, gap, paper, novelty, red_team"),
+    target_type: str = Query(..., description="contradiction, consensus, gap, paper, novelty, red_team, dead_end, claim_propagation, citation_echo, reproducibility"),
     target_id: str = Query(..., description="Identifier of the target entity")
 ):
     """Explain WHY a specific AI-generated finding, contradiction, gap, or score was produced."""
@@ -250,6 +250,90 @@ async def get_bibliography(session_id: str, style: str = Query("apa", descriptio
         "formatted": formatted,
         "papers": [p.model_dump(mode="json") for p in papers]
     }
+
+
+@router.get("/research/session/{session_id}/dead-ends")
+async def get_dead_ends(session_id: str):
+    """Get the Dead-End Atlas — approaches identified as failing or limited."""
+    pipeline = get_pipeline()
+    session = pipeline.get_session(session_id)
+    if not session:
+        raise HTTPException(404, "Session not found")
+    return {
+        "dead_ends": [d.model_dump(mode="json") for d in session.dead_ends],
+        "count": len(session.dead_ends),
+    }
+
+
+@router.get("/research/session/{session_id}/reproducibility")
+async def get_reproducibility(session_id: str):
+    """Get reproducibility profiles for analyzed papers."""
+    pipeline = get_pipeline()
+    session = pipeline.get_session(session_id)
+    if not session:
+        raise HTTPException(404, "Session not found")
+    profiles = {pid: p.model_dump(mode="json") for pid, p in session.reproducibility_profiles.items()}
+    avg_score = sum(p.completeness_score for p in session.reproducibility_profiles.values()) / max(len(session.reproducibility_profiles), 1)
+    return {
+        "profiles": profiles,
+        "count": len(profiles),
+        "average_completeness": round(avg_score, 3),
+    }
+
+
+@router.get("/research/session/{session_id}/claim-propagations")
+async def get_claim_propagations(session_id: str):
+    """Get ClaimLine — how claims propagate and transform through literature."""
+    pipeline = get_pipeline()
+    session = pipeline.get_session(session_id)
+    if not session:
+        raise HTTPException(404, "Session not found")
+    return {
+        "propagations": [p.model_dump(mode="json") for p in session.claim_propagations],
+        "count": len(session.claim_propagations),
+        "types": list(set(p.relationship_type.value for p in session.claim_propagations)),
+    }
+
+
+@router.get("/research/session/{session_id}/citation-echoes")
+async def get_citation_echoes(session_id: str):
+    """Get citation echo clusters — identifies illusory consensus."""
+    pipeline = get_pipeline()
+    session = pipeline.get_session(session_id)
+    if not session:
+        raise HTTPException(404, "Session not found")
+    return {
+        "echoes": [e.model_dump(mode="json") for e in session.citation_echoes],
+        "count": len(session.citation_echoes),
+    }
+
+
+@router.get("/research/session/{session_id}/evidence-strength")
+async def get_evidence_strength(session_id: str):
+    """Get multi-dimensional evidence strength for all claims."""
+    pipeline = get_pipeline()
+    session = pipeline.get_session(session_id)
+    if not session:
+        raise HTTPException(404, "Session not found")
+    claims_with_strength = []
+    for claim in session.claims:
+        c_data = claim.model_dump(mode="json")
+        if claim.strength:
+            c_data["composite_score"] = claim.strength.composite_score
+        claims_with_strength.append(c_data)
+    return {"claims": claims_with_strength}
+
+
+@router.get("/research/session/{session_id}/research-graph")
+async def get_research_graph(session_id: str):
+    """Get the complete research knowledge graph for visualization."""
+    from backend.app.services.research_intelligence import build_research_graph
+    pipeline = get_pipeline()
+    session = pipeline.get_session(session_id)
+    if not session:
+        raise HTTPException(404, "Session not found")
+    graph = build_research_graph(session)
+    return graph.model_dump(mode="json")
 
 
 @router.post("/config/toggle-mode")

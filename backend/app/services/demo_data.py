@@ -16,7 +16,11 @@ from backend.app.models.research import (
     MissingExperiment, ExperimentProposal, NoveltyAssessment,
     RedTeamResult, AuditResult, ResearchPlan, SearchResult,
     EvidenceConfidence, ContradictionType, ConsensusStatus,
-    Availability, CitationRelation, AgentStatus
+    Availability, CitationRelation, AgentStatus,
+    DeadEnd, DeadEndStatus, ReproducibilityProfile,
+    ClaimPropagation, ClaimPropagationType, CitationEchoCluster,
+    RedTeamFinding, RedTeamFindingType, RedTeamSeverity,
+    IntegrityFinding, IntegrityVerdict, NoveltyLevel,
 )
 
 
@@ -816,12 +820,326 @@ def get_demo_audit() -> AuditResult:
         contradictions_represented=True,
         bibliographic_metadata_complete=True,
         uncertainty_levels_present=True,
+        integrity_findings=[
+            IntegrityFinding(
+                check_name="claims_have_evidence",
+                passed=True,
+                details="14 of 16 claims have direct evidence linkage"
+            ),
+            IntegrityFinding(
+                check_name="paper_metadata_verifiable",
+                passed=True,
+                details="8/8 papers have verifiable DOI metadata"
+            ),
+            IntegrityFinding(
+                check_name="bibliography_complete",
+                passed=True,
+                details="All papers have title, authors, and date/venue/DOI"
+            ),
+            IntegrityFinding(
+                check_name="contradictions_represented",
+                passed=True,
+                details="4 contradictions identified and documented"
+            ),
+            IntegrityFinding(
+                check_name="uncertainty_levels",
+                passed=True,
+                details="Uncertainty/confidence levels present on claims"
+            ),
+            IntegrityFinding(
+                check_name="citation_echo_check",
+                passed=True,
+                details="Citation echo analysis completed — 1 echo cluster detected"
+            ),
+        ],
         issues=[
             "2 claims lack direct quantitative evidence (claims about attention mechanism and graph construction variability)",
         ],
         warnings=[
             "Demo mode: citations are synthetic and should not be used for real academic work",
-            "Cross-chemistry evidence comes from a single paper — independent replication needed"
+            "Cross-chemistry evidence comes from a single paper — independent replication needed",
+            "Citation echo detected: GAT superiority claim traces primarily to Zhang et al. 2024"
         ],
-        overall_integrity="warnings"
+        overall_integrity="warnings",
+        verdict=IntegrityVerdict.PASS_WITH_WARNINGS,
     )
+
+
+def get_demo_dead_ends() -> list[DeadEnd]:
+    """Dead-End Atlas — approaches identified as limited or failing."""
+    return [
+        DeadEnd(
+            id="dead-001",
+            approach="MLP for Battery RUL",
+            description="Standard multi-layer perceptrons consistently outperformed by temporal models across all evaluated datasets. MLP lacks ability to capture sequential degradation patterns.",
+            supporting_papers=["demo-p005"],
+            failure_evidence=[
+                "Benchmark study shows MLP underperforms LSTM/GRU/Transformer on all 4 datasets",
+                "No temporal modeling capability limits battery degradation prediction"
+            ],
+            failure_conditions=["all tested datasets", "all prediction horizons"],
+            attempt_count=4,
+            success_conditions_if_any=[],
+            confidence=EvidenceConfidence.HIGH,
+            status=DeadEndStatus.SUPERSEDED,
+            alternative_directions=["Use any temporal model (LSTM, GRU, Transformer) as minimum baseline"],
+        ),
+        DeadEnd(
+            id="dead-002",
+            approach="GNN for Single-Cell Limited Data",
+            description="Graph neural networks (GCN, GAT) underperform LSTM when training data is limited (fewer than 50 cycles) in single-cell battery scenarios. The graph structure overhead is not justified without sufficient data.",
+            supporting_papers=["demo-p003", "demo-p005"],
+            failure_evidence=[
+                "LSTM achieves 15-25% lower RMSE than GAT/GCN with <50 training cycles",
+                "GNN models show higher variance with limited data",
+                "Benchmark confirms LSTM provides more consistent baseline"
+            ],
+            failure_conditions=["single-cell", "limited training data (<50 cycles)", "LFP chemistry"],
+            attempt_count=3,
+            success_conditions_if_any=[
+                "Sufficient training data (>100 cycles)",
+                "Multi-cell battery pack scenarios where graph structure is natural"
+            ],
+            confidence=EvidenceConfidence.HIGH,
+            status=DeadEndStatus.LIMITED,
+            alternative_directions=[
+                "Use LSTM/GRU for limited data scenarios",
+                "Reserve GNN for multi-cell or data-rich scenarios",
+                "Investigate few-shot learning approaches for GNNs"
+            ],
+        ),
+        DeadEnd(
+            id="dead-003",
+            approach="Direct Cross-Chemistry Transfer (No Adaptation)",
+            description="All architectures fail when directly transferred across battery chemistries without domain adaptation. 15-40% RMSE increase observed across LSTM, Transformer, and GCN.",
+            supporting_papers=["demo-p004"],
+            failure_evidence=[
+                "All models degrade 15-40% under cross-chemistry conditions",
+                "No model achieves satisfactory performance without adaptation"
+            ],
+            failure_conditions=["NMC to LFP transfer", "no domain adaptation"],
+            attempt_count=3,
+            success_conditions_if_any=["With domain adaptation, gap reduces by 60%"],
+            confidence=EvidenceConfidence.HIGH,
+            status=DeadEndStatus.FAILED,
+            alternative_directions=[
+                "Domain-adversarial training",
+                "Chemistry-agnostic feature engineering",
+                "Few-shot fine-tuning on target domain"
+            ],
+        ),
+    ]
+
+
+def get_demo_reproducibility_profiles() -> dict[str, ReproducibilityProfile]:
+    """Reproducibility profiles for demo papers."""
+    profiles = {}
+
+    profiles["demo-p001"] = ReproducibilityProfile(
+        paper_id="demo-p001",
+        dataset_available=Availability.AVAILABLE,
+        data_preprocessing_documented=Availability.AVAILABLE,
+        code_available=Availability.NOT_FOUND,
+        model_specification_documented=Availability.AVAILABLE,
+        hyperparameters_documented=Availability.PARTIAL,
+        training_procedure_documented=Availability.AVAILABLE,
+        random_seeds_reported=Availability.UNKNOWN,
+        evaluation_metrics_defined=Availability.AVAILABLE,
+        baselines_reproducible=Availability.AVAILABLE,
+        statistical_reporting=Availability.UNKNOWN,
+        hardware_environment_documented=Availability.UNKNOWN,
+        external_validation=Availability.NOT_FOUND,
+        experimental_protocol_documented=Availability.AVAILABLE,
+        completeness_score=0.558,
+        missing_components=["code", "external_validation"],
+        risk_factors=[
+            "No code available — implementation details unverifiable",
+            "Random seeds not reported — results may not be exactly reproducible",
+            "No statistical significance tests reported",
+            "No external validation — results only verified on original setup"
+        ],
+        explanation="Reproducibility completeness: 56%. 2 components missing, 4 risk factors identified."
+    )
+
+    profiles["demo-p002"] = ReproducibilityProfile(
+        paper_id="demo-p002",
+        dataset_available=Availability.AVAILABLE,
+        data_preprocessing_documented=Availability.AVAILABLE,
+        code_available=Availability.AVAILABLE,
+        model_specification_documented=Availability.AVAILABLE,
+        hyperparameters_documented=Availability.AVAILABLE,
+        training_procedure_documented=Availability.AVAILABLE,
+        random_seeds_reported=Availability.UNKNOWN,
+        evaluation_metrics_defined=Availability.AVAILABLE,
+        baselines_reproducible=Availability.AVAILABLE,
+        statistical_reporting=Availability.UNKNOWN,
+        hardware_environment_documented=Availability.PARTIAL,
+        external_validation=Availability.NOT_FOUND,
+        experimental_protocol_documented=Availability.AVAILABLE,
+        completeness_score=0.731,
+        missing_components=["external_validation"],
+        risk_factors=[
+            "Random seeds not reported",
+            "No external validation"
+        ],
+        explanation="Reproducibility completeness: 73%. 1 component missing, 2 risk factors identified."
+    )
+
+    profiles["demo-p005"] = ReproducibilityProfile(
+        paper_id="demo-p005",
+        dataset_available=Availability.AVAILABLE,
+        data_preprocessing_documented=Availability.AVAILABLE,
+        code_available=Availability.AVAILABLE,
+        model_specification_documented=Availability.AVAILABLE,
+        hyperparameters_documented=Availability.AVAILABLE,
+        training_procedure_documented=Availability.AVAILABLE,
+        random_seeds_reported=Availability.AVAILABLE,
+        evaluation_metrics_defined=Availability.AVAILABLE,
+        baselines_reproducible=Availability.AVAILABLE,
+        statistical_reporting=Availability.AVAILABLE,
+        hardware_environment_documented=Availability.AVAILABLE,
+        external_validation=Availability.PARTIAL,
+        experimental_protocol_documented=Availability.AVAILABLE,
+        completeness_score=0.962,
+        missing_components=[],
+        risk_factors=["External validation only partial"],
+        explanation="Reproducibility completeness: 96%. Strong reproducibility standards."
+    )
+
+    return profiles
+
+
+def get_demo_claim_propagations() -> list[ClaimPropagation]:
+    """ClaimLine — how claims propagate and transform through literature."""
+    return [
+        ClaimPropagation(
+            id="prop-001",
+            source_claim_id="claim-001",
+            derived_claim_id="claim-011",
+            source_paper_id="demo-p001",
+            derived_paper_id="demo-p005",
+            relationship_type=ClaimPropagationType.CONTEXT_SHIFTED,
+            source_conditions=["NASA dataset", "NMC chemistry", "short horizon (30 cycles)"],
+            derived_conditions=["4 datasets", "consistent evaluation"],
+            evidence_strength=EvidenceConfidence.HIGH,
+            scope_change="Original claim specific to NASA/NMC/30-cycle; benchmark paper finds condition-dependent results across 4 datasets",
+            confidence=EvidenceConfidence.HIGH,
+            explanation="Claim generalized — original GAT superiority claim from specific conditions was re-evaluated in broader benchmark, finding no universal winner",
+        ),
+        ClaimPropagation(
+            id="prop-002",
+            source_claim_id="claim-001",
+            derived_claim_id="claim-014",
+            source_paper_id="demo-p001",
+            derived_paper_id="demo-p006",
+            relationship_type=ClaimPropagationType.PRESERVED,
+            source_conditions=["NASA dataset", "NMC chemistry", "short horizon (30 cycles)"],
+            derived_conditions=["NASA dataset", "NMC chemistry"],
+            evidence_strength=EvidenceConfidence.HIGH,
+            scope_change="Conditions largely preserved; GCN achieves comparable RMSE (0.089 vs GAT 0.084)",
+            confidence=EvidenceConfidence.HIGH,
+            explanation="Claim preserved with consistent scope and conditions — GCN variant confirms GNN family performance on same dataset",
+        ),
+        ClaimPropagation(
+            id="prop-003",
+            source_claim_id="claim-001",
+            derived_claim_id="claim-006",
+            source_paper_id="demo-p001",
+            derived_paper_id="demo-p003",
+            relationship_type=ClaimPropagationType.CONTRADICTED,
+            source_conditions=["NASA dataset", "NMC chemistry", "short horizon (30 cycles)"],
+            derived_conditions=["CALCE dataset", "LFP chemistry", "fewer than 50 cycles", "single cell"],
+            evidence_strength=EvidenceConfidence.HIGH,
+            scope_change="Dropped conditions: NASA dataset, NMC chemistry; Added conditions: limited data, CALCE dataset, LFP chemistry",
+            confidence=EvidenceConfidence.HIGH,
+            explanation="Claim contradicted — under different conditions (limited data, different chemistry), LSTM outperforms GNN",
+        ),
+        ClaimPropagation(
+            id="prop-004",
+            source_claim_id="claim-001",
+            derived_claim_id="claim-015",
+            source_paper_id="demo-p001",
+            derived_paper_id="demo-p007",
+            relationship_type=ClaimPropagationType.SPECIALIZED,
+            source_conditions=["NASA dataset", "NMC chemistry", "short horizon (30 cycles)"],
+            derived_conditions=["Multi-cell battery pack", "MIT-Stanford dataset"],
+            evidence_strength=EvidenceConfidence.MEDIUM,
+            scope_change="Context shifted from single-cell to multi-cell; graph advantage specifically pronounced in multi-cell",
+            confidence=EvidenceConfidence.MEDIUM,
+            explanation="Claim specialized — graph advantage claim narrowed to multi-cell scenarios where inter-cell dependencies provide natural graph structure",
+        ),
+    ]
+
+
+def get_demo_citation_echoes() -> list[CitationEchoCluster]:
+    """Citation echo detection — identifies illusory consensus."""
+    return [
+        CitationEchoCluster(
+            id="echo-001",
+            claim_statement="GAT outperforms LSTM for battery RUL prediction",
+            originating_paper_id="demo-p001",
+            originating_paper_title="Graph Attention Networks for Battery Remaining Useful Life Prediction",
+            echo_paper_ids=["demo-p006", "demo-p007"],
+            total_support_count=3,
+            independent_support_count=1,
+            citation_dependency_depth=1,
+            echo_chain=["demo-p001", "demo-p006", "demo-p007"],
+            independence_weight=0.333,
+            explanation="Of 3 papers supporting GAT for battery RUL, 2 (Liu & Wang 2024, Kim et al. 2025) "
+                       "directly cite and extend Zhang et al. 2024 as their baseline. "
+                       "Only 1 source provides independent evidence. "
+                       "The apparent consensus of 3 supporting papers is actually 1 independent finding with 2 derivative extensions."
+        ),
+    ]
+
+
+def get_demo_red_team_findings() -> list[RedTeamFinding]:
+    """Structured red team findings with provenance."""
+    return [
+        RedTeamFinding(
+            id="rtf-001",
+            severity=RedTeamSeverity.HIGH,
+            finding_type=RedTeamFindingType.CITATION_ECHO,
+            description="GNN superiority evidence traces primarily to Zhang et al. 2024 — 2 of 3 supporting papers are derivative extensions",
+            evidence_refs=["demo-p001", "demo-p006", "demo-p007"],
+            affected_claims=["claim-001", "claim-014", "claim-015"],
+            recommended_correction="Downweight consensus strength; clearly note that independent replication is limited"
+        ),
+        RedTeamFinding(
+            id="rtf-002",
+            severity=RedTeamSeverity.MEDIUM,
+            finding_type=RedTeamFindingType.DATASET_BIAS,
+            description="Most GNN evaluations use NASA dataset — results may not generalize to other datasets/chemistries",
+            evidence_refs=["demo-p001", "demo-p006"],
+            affected_claims=["claim-001", "claim-002", "claim-003", "claim-014"],
+            recommended_correction="Require multi-dataset evaluation before accepting GNN superiority claims"
+        ),
+        RedTeamFinding(
+            id="rtf-003",
+            severity=RedTeamSeverity.MEDIUM,
+            finding_type=RedTeamFindingType.OVERGENERALIZATION,
+            description="Claiming GAT 'outperforms LSTM' without specifying conditions overstates the evidence — the claim holds only under specific conditions",
+            evidence_refs=["demo-p001", "demo-p003", "demo-p005"],
+            affected_claims=["claim-001"],
+            recommended_correction="Qualify all performance claims with dataset, chemistry, data regime, and prediction horizon conditions"
+        ),
+        RedTeamFinding(
+            id="rtf-004",
+            severity=RedTeamSeverity.HIGH,
+            finding_type=RedTeamFindingType.REPRODUCIBILITY_WEAKNESS,
+            description="Only 3 of 8 demo papers provide code — benchmark study found only 3/15 surveyed papers provide complete code",
+            evidence_refs=["demo-p005"],
+            affected_claims=["claim-013"],
+            recommended_correction="Require code availability for all performance comparison claims"
+        ),
+        RedTeamFinding(
+            id="rtf-005",
+            severity=RedTeamSeverity.LOW,
+            finding_type=RedTeamFindingType.PUBLICATION_BIAS,
+            description="Negative GNN results may be underreported — publication bias favors positive findings",
+            evidence_refs=[],
+            affected_claims=[],
+            recommended_correction="Consider that the positive evidence for GNNs may be inflated by publication bias"
+        ),
+    ]
+

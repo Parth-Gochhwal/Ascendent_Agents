@@ -111,7 +111,9 @@ class GeminiProvider(LLMProvider):
         return self._client
 
     async def generate(self, prompt: str, system_prompt: str = "",
-                       temperature: float = 0.3, use_fast: bool = False) -> str:
+                       temperature: float = 0.3, use_fast: bool = False,
+                       response_mime_type: Optional[str] = None,
+                       response_schema: Optional[Any] = None) -> str:
         model = self.fast_model if use_fast else self.model
 
         # Check cache
@@ -124,10 +126,16 @@ class GeminiProvider(LLMProvider):
 
         from google.genai import types
 
-        config = types.GenerateContentConfig(
-            temperature=temperature,
-            system_instruction=system_prompt if system_prompt else None,
-        )
+        config_kwargs = {
+            "temperature": temperature,
+            "system_instruction": system_prompt if system_prompt else None,
+        }
+        if response_mime_type:
+            config_kwargs["response_mime_type"] = response_mime_type
+        if response_schema:
+            config_kwargs["response_schema"] = response_schema
+            
+        config = types.GenerateContentConfig(**config_kwargs)
 
         for attempt in range(3):
             try:
@@ -153,24 +161,26 @@ class GeminiProvider(LLMProvider):
     async def structured_generate(self, prompt: str, response_model: Type[T],
                                    system_prompt: str = "", temperature: float = 0.1,
                                    use_fast: bool = False) -> T:
-        """Generate structured output and parse into Pydantic model."""
-        schema_hint = json.dumps(response_model.model_json_schema(), indent=2)
-        full_prompt = (
-            f"{prompt}\n\n"
-            f"Respond with valid JSON matching this schema:\n```json\n{schema_hint}\n```\n"
-            f"Return ONLY the JSON object, no markdown formatting or extra text."
+        """Generate structured output and parse into Pydantic model using native structured output."""
+        
+        raw = await self.generate(
+            prompt=prompt,
+            system_prompt=system_prompt,
+            temperature=temperature,
+            use_fast=use_fast,
+            response_mime_type="application/json",
+            response_schema=response_model
         )
 
-        raw = await self.generate(full_prompt, system_prompt, temperature, use_fast)
-
-        # Parse JSON from response
         text = raw.strip()
-        if text.startswith("```"):
-            lines = text.split("\n")
-            text = "\n".join(lines[1:])
-            if text.endswith("```"):
-                text = text[:-3]
-            text = text.strip()
+        # Some fallback parsing in case the native output still has codeblocks
+        if text.startswith("```json"):
+            text = text[7:]
+        elif text.startswith("```"):
+            text = text[3:]
+        if text.endswith("```"):
+            text = text[:-3]
+        text = text.strip()
 
         for attempt in range(2):
             try:
