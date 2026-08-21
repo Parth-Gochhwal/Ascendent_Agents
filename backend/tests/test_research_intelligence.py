@@ -339,13 +339,25 @@ class TestContradictionCandidates:
         for c1, c2 in candidates:
             assert c1.paper_id != c2.paper_id
 
-    def test_likelihood_score_opposing_keywords(self):
+    def test_opposing_keywords_rank_highly(self):
+        """Claims with opposing directional keywords and same metric should rank as top candidates."""
         c1 = Claim(id="c1", paper_id="p1", statement="GNN outperforms LSTM",
                    metric="RMSE")
         c2 = Claim(id="c2", paper_id="p2", statement="LSTM outperforms GNN",
                    metric="RMSE")
-        score = ri._contradiction_likelihood_score(c1, c2, {})
-        assert score >= 0.5  # opposing keywords + same metric
+        c3 = Claim(id="c3", paper_id="p3", statement="Transformers are efficient",
+                   metric="FLOPs")
+        papers = {
+            "p1": Paper(id="p1", title="Paper A"),
+            "p2": Paper(id="p2", title="Paper B"),
+            "p3": Paper(id="p3", title="Paper C"),
+        }
+        candidates = ri.generate_contradiction_candidates([c1, c2, c3], papers)
+        # c1 vs c2 should be the top candidate (opposing keywords + same metric)
+        assert len(candidates) >= 1
+        top_pair = candidates[0]
+        top_ids = {top_pair[0].id, top_pair[1].id}
+        assert top_ids == {"c1", "c2"}
 
 
 # ─── Integrity Audit Tests ───────────────────────────────
@@ -567,6 +579,204 @@ class TestDemoPipelineIntegration:
             assert why_rp is not None
             assert why_rp.target_type == "reproducibility"
             assert "Score" in why_rp.reasoning_factors[0]
+
+
+# ─── Hardening Tests: Contradiction Candidate Ranking ─────
+
+class TestContradictionCandidateRanking:
+    def test_same_metric_different_value_ranks_highest(self):
+        """Claims with same metric but different values should rank above unrelated claims."""
+        c1 = Claim(id="c1", paper_id="p1", statement="Model achieves 95% accuracy",
+                   metric="accuracy", evidence_value="95%")
+        c2 = Claim(id="c2", paper_id="p2", statement="Model achieves 82% accuracy",
+                   metric="accuracy", evidence_value="82%")
+        c3 = Claim(id="c3", paper_id="p3", statement="Training uses cosine scheduler",
+                   metric=None)
+        papers = {
+            "p1": Paper(id="p1", title="A"), "p2": Paper(id="p2", title="B"),
+            "p3": Paper(id="p3", title="C"),
+        }
+        candidates = ri.generate_contradiction_candidates([c1, c2, c3], papers)
+        assert len(candidates) >= 1
+        top_ids = {candidates[0][0].id, candidates[0][1].id}
+        assert top_ids == {"c1", "c2"}
+
+    def test_respects_max_pairs_limit(self):
+        """Should not return more pairs than max_pairs."""
+        claims = [
+            Claim(id=f"c{i}", paper_id=f"p{i % 3}", statement=f"Claim {i}", metric="accuracy")
+            for i in range(20)
+        ]
+        papers = {f"p{i}": Paper(id=f"p{i}", title=f"Paper {i}") for i in range(3)}
+        candidates = ri.generate_contradiction_candidates(claims, papers, max_pairs=5)
+        assert len(candidates) <= 5
+
+    def test_evidence_strength_weighting(self):
+        """High-strength claims in conflict should rank above low-strength ones."""
+        strong = EvidenceStrength(directness=0.9, source_quality=0.9, methodological_rigor=0.9)
+        weak = EvidenceStrength(directness=0.2, source_quality=0.2, methodological_rigor=0.2)
+        c1 = Claim(id="c1", paper_id="p1", statement="Transformer outperforms LSTM", metric="F1", strength=strong)
+        c2 = Claim(id="c2", paper_id="p2", statement="LSTM outperforms Transformer", metric="F1", strength=strong)
+        c3 = Claim(id="c3", paper_id="p3", statement="CNN outperforms RNN", metric="accuracy", strength=weak)
+        c4 = Claim(id="c4", paper_id="p4", statement="RNN outperforms CNN", metric="accuracy", strength=weak)
+        papers = {f"p{i}": Paper(id=f"p{i}", title=f"P{i}") for i in range(1, 5)}
+        candidates = ri.generate_contradiction_candidates([c1, c2, c3, c4], papers)
+        assert len(candidates) >= 2
+        top_ids = {candidates[0][0].id, candidates[0][1].id}
+        assert top_ids == {"c1", "c2"}  # Strong evidence conflict ranks first
+
+
+# ─── Hardening Tests: Red Team Evidence Ranking ──────────
+
+class TestRedTeamEvidenceRanking:
+    def test_contradicted_evidence_ranks_first(self):
+        """Evidence backing contradicted claims should rank above uncontested evidence."""
+        session = ResearchSession(question="Test")
+        session.claims = [
+            Claim(id="c1", paper_id="p1", statement="X works"),
+            Claim(id="c2", paper_id="p2", statement="X fails"),
+        ]
+        session.evidence = [
+            Evidence(id="e1", claim_id="c1", paper_id="p1", description="X works evidence"),
+            Evidence(id="e2", claim_id="c2", paper_id="p2", description="X fails evidence"),
+            Evidence(id="e3", claim_id="c_unrelated", paper_id="p3", description="Unrelated evidence"),
+        ]
+        session.contradictions = [
+            Contradiction(claim_a_id="c1", claim_b_id="c2", paper_a_id="p1", paper_b_id="p2")
+        ]
+        ranked = ri.rank_red_team_evidence(session, max_items=10)
+        assert len(ranked) == 3
+        # e1 and e2 should rank above e3 (they back contradicted claims)
+        top_ids = {ranked[0].id, ranked[1].id}
+        assert "e1" in top_ids
+        assert "e2" in top_ids
+
+    def test_low_repro_evidence_ranks_higher(self):
+        """Evidence from low-reproducibility papers should rank above high-reproducibility."""
+        session = ResearchSession(question="Test")
+        session.claims = [Claim(id="c1", paper_id="p1", statement="X")]
+        session.evidence = [
+            Evidence(id="e_low", claim_id="c1", paper_id="p_low_repro", description="Low repro evidence"),
+            Evidence(id="e_high", claim_id="c1", paper_id="p_high_repro", description="High repro evidence"),
+        ]
+        session.reproducibility_profiles = {
+            "p_low_repro": ReproducibilityProfile(paper_id="p_low_repro", completeness_score=0.2),
+            "p_high_repro": ReproducibilityProfile(paper_id="p_high_repro", completeness_score=0.9),
+        }
+        ranked = ri.rank_red_team_evidence(session)
+        assert ranked[0].id == "e_low"
+
+
+# ─── Hardening Tests: Reproducibility Blockers ───────────
+
+class TestReproducibilityBlockers:
+    def test_generates_blockers_for_missing_code(self):
+        """Missing code should generate a CRITICAL CODE_UNAVAILABLE blocker."""
+        paper = Paper(id="p1", title="Test Paper")
+        analysis = PaperAnalysis(paper_id="p1", code_availability=Availability.NOT_FOUND)
+        profile = ri.compute_reproducibility_profile(paper, analysis)
+        blocker_cats = [b.category for b in profile.blockers]
+        assert "CODE_UNAVAILABLE" in blocker_cats
+        code_blocker = next(b for b in profile.blockers if b.category == "CODE_UNAVAILABLE")
+        assert code_blocker.severity == "critical"
+
+    def test_generates_blocker_for_missing_seeds(self):
+        paper = Paper(id="p1", title="Test Paper")
+        analysis = PaperAnalysis(paper_id="p1")
+        profile = ri.compute_reproducibility_profile(paper, analysis)
+        blocker_cats = [b.category for b in profile.blockers]
+        assert "MISSING_RANDOM_SEED" in blocker_cats
+
+    def test_blocker_has_remediation(self):
+        paper = Paper(id="p1", title="Test Paper")
+        analysis = PaperAnalysis(paper_id="p1", code_availability=Availability.NOT_FOUND)
+        profile = ri.compute_reproducibility_profile(paper, analysis)
+        for blocker in profile.blockers:
+            assert blocker.recommended_remediation, f"Blocker {blocker.category} missing remediation"
+
+
+# ─── Hardening Tests: Dead-End Structured Diagnostics ────
+
+class TestDeadEndDiagnostics:
+    def test_conditional_failure_status(self):
+        """Dead ends from claims with conditions should get WEAK_UNDER_SPECIFIC_CONDITIONS."""
+        session = ResearchSession(question="Test")
+        session.papers["p1"] = Paper(id="p1", title="Test")
+        session.analyses["p1"] = PaperAnalysis(paper_id="p1")
+        session.claims = [
+            Claim(id="c1", paper_id="p1",
+                  statement="GNN fails on large-scale molecular graphs",
+                  conditions=["graphs > 1M nodes", "molecular domain"])
+        ]
+        dead_ends = ri.detect_dead_ends(session)
+        assert len(dead_ends) >= 1
+        de = dead_ends[0]
+        assert de.status == DeadEndStatus.WEAK_UNDER_SPECIFIC_CONDITIONS
+        assert de.failure_reason == "explicit_failure"
+
+    def test_repeatedly_underperforming(self):
+        """Method used as baseline in 3+ papers should be REPEATEDLY_UNDERPERFORMING."""
+        session = ResearchSession(question="Test")
+        for i in range(3):
+            pid = f"p{i}"
+            session.papers[pid] = Paper(id=pid, title=f"Paper {i}")
+            session.analyses[pid] = PaperAnalysis(
+                paper_id=pid,
+                methods=[MethodPipeline(paper_id=pid, model_architecture="NewModel",
+                                        baselines=["OldModel"], dataset=f"Dataset{i}")]
+            )
+        dead_ends = ri.detect_dead_ends(session)
+        old_model_de = [d for d in dead_ends if "OLDMODEL" in d.approach.upper()]
+        assert len(old_model_de) >= 1
+        assert old_model_de[0].status == DeadEndStatus.REPEATEDLY_UNDERPERFORMING
+        assert old_model_de[0].attempt_count >= 3
+
+
+# ─── Hardening Tests: Stage Result & Quality State ───────
+
+class TestStageResultTracking:
+    def test_quality_state_defaults_to_complete(self):
+        session = ResearchSession(question="Test")
+        assert session.quality_state == "complete"
+        assert session.stage_results == {}
+
+    def test_failed_stage_degrades_quality(self):
+        from backend.app.models.research import StageResult
+        from backend.app.services.agents.base import BaseAgent
+        from unittest.mock import MagicMock
+
+        class DummyAgent(BaseAgent):
+            @property
+            def name(self):
+                return "Dummy"
+            async def execute(self, session, **kwargs):
+                pass
+
+        agent = DummyAgent(llm=MagicMock())
+        session = ResearchSession(question="Test")
+        agent.record_stage(session, "test_stage", StageResult.FAILED, "Something broke")
+        assert session.quality_state == "degraded"
+        assert "Something broke" in session.quality_warnings
+        assert session.stage_results["test_stage"] == "failed"
+
+    def test_success_preserves_complete(self):
+        from backend.app.models.research import StageResult
+        from backend.app.services.agents.base import BaseAgent
+        from unittest.mock import MagicMock
+
+        class DummyAgent(BaseAgent):
+            @property
+            def name(self):
+                return "Dummy"
+            async def execute(self, session, **kwargs):
+                pass
+
+        agent = DummyAgent(llm=MagicMock())
+        session = ResearchSession(question="Test")
+        agent.record_stage(session, "stage_a", StageResult.SUCCESS)
+        agent.record_stage(session, "stage_b", StageResult.SUCCESS)
+        assert session.quality_state == "complete"
+        assert len(session.quality_warnings) == 0
 
 
 if __name__ == "__main__":

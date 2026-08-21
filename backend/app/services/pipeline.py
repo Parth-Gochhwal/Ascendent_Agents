@@ -324,7 +324,8 @@ class ResearchPipeline:
 
     async def _run_live_pipeline(self, session: ResearchSession):
         """Run the actual live research pipeline with real APIs using discrete agents."""
-        
+        from backend.app.models.research import StageResult
+
         # Instantiate agents
         planning_agent = PlanningAgent(self.llm)
         retrieval_agent = RetrievalAgent(self.llm, self.providers, self.settings.max_papers_deep_analysis)
@@ -339,10 +340,13 @@ class ResearchPipeline:
         await self._emit_event(session, planning_agent.name, AgentStatus.RUNNING, "Analyzing research question...")
         try:
             await planning_agent.execute(session)
+            planning_agent.record_stage(session, "planning", StageResult.SUCCESS)
             await self._emit_event(session, planning_agent.name, AgentStatus.COMPLETED,
                                    f"Decomposed into {len(session.plan.subquestions)} subquestions")
         except Exception as e:
             logger.error(f"Planning failed: {e}")
+            planning_agent.record_stage(session, "planning", StageResult.PARTIAL,
+                                        "Planning failed — using fallback plan")
             await self._emit_event(session, planning_agent.name, AgentStatus.FAILED, str(e))
             session.plan = ResearchPlan(
                 normalized_question=session.question,
@@ -355,32 +359,53 @@ class ResearchPipeline:
         await self._emit_event(session, retrieval_agent.name, AgentStatus.RUNNING, "Searching and ranking literature...")
         try:
             found, deduped, selected = await retrieval_agent.execute(session)
+            if selected == 0:
+                retrieval_agent.record_stage(session, "retrieval", StageResult.FAILED,
+                                             "No papers retrieved — downstream analysis will be empty")
+            else:
+                retrieval_agent.record_stage(session, "retrieval", StageResult.SUCCESS)
             await self._emit_event(session, retrieval_agent.name, AgentStatus.COMPLETED,
                                    f"Found: {found} → Dedup: {deduped} → Selected: {selected}")
         except Exception as e:
             logger.error(f"Retrieval failed: {e}")
+            retrieval_agent.record_stage(session, "retrieval", StageResult.FAILED,
+                                         f"Literature retrieval failed: {e}")
             await self._emit_event(session, retrieval_agent.name, AgentStatus.FAILED, str(e))
 
         # Phase 4 & 5: Deep Analysis & Evidence Extraction
-        session.status = SessionStatus.ANALYZING
-        await self._emit_event(session, analysis_agent.name, AgentStatus.RUNNING, "Deeply analyzing papers...")
-        try:
-            await analysis_agent.execute(session)
-            await self._emit_event(session, analysis_agent.name, AgentStatus.COMPLETED,
-                                   f"Analyzed {len(session.analyses)} papers, Extracted {len(session.claims)} claims")
-        except Exception as e:
-            logger.error(f"Analysis failed: {e}")
-            await self._emit_event(session, analysis_agent.name, AgentStatus.FAILED, str(e))
+        if session.papers:
+            session.status = SessionStatus.ANALYZING
+            await self._emit_event(session, analysis_agent.name, AgentStatus.RUNNING, "Deeply analyzing papers...")
+            try:
+                await analysis_agent.execute(session)
+                if session.claims:
+                    analysis_agent.record_stage(session, "analysis", StageResult.SUCCESS)
+                else:
+                    analysis_agent.record_stage(session, "analysis", StageResult.PARTIAL,
+                                                "Analysis completed but no claims extracted")
+                await self._emit_event(session, analysis_agent.name, AgentStatus.COMPLETED,
+                                       f"Analyzed {len(session.analyses)} papers, Extracted {len(session.claims)} claims")
+            except Exception as e:
+                logger.error(f"Analysis failed: {e}")
+                analysis_agent.record_stage(session, "analysis", StageResult.FAILED,
+                                            "Evidence extraction failed — downstream synthesis has incomplete evidence")
+                await self._emit_event(session, analysis_agent.name, AgentStatus.FAILED, str(e))
+        else:
+            analysis_agent.record_stage(session, "analysis", StageResult.SKIPPED,
+                                        "No papers available for analysis")
 
         # Phase 6 & Pre-Synthesis Intelligence
         session.status = SessionStatus.BUILDING_GRAPH
         await self._emit_event(session, intelligence_agent.name, AgentStatus.RUNNING, "Building citation graph and pre-synthesis metrics...")
         try:
             await intelligence_agent.execute(session, phase="pre_synthesis")
+            intelligence_agent.record_stage(session, "pre_synthesis_intelligence", StageResult.SUCCESS)
             await self._emit_event(session, intelligence_agent.name, AgentStatus.COMPLETED,
                                    f"Mapped {len(session.citations)} citations, {len(session.dead_ends)} dead ends")
         except Exception as e:
             logger.error(f"Pre-synthesis intelligence failed: {e}")
+            intelligence_agent.record_stage(session, "pre_synthesis_intelligence", StageResult.FAILED,
+                                            "Citation graph / dead-end / reproducibility profiling failed")
             await self._emit_event(session, intelligence_agent.name, AgentStatus.FAILED, str(e))
 
         # Phase 7 & 8: Contradictions & Consensus
@@ -388,10 +413,13 @@ class ResearchPipeline:
         await self._emit_event(session, synthesis_agent.name, AgentStatus.RUNNING, "Synthesizing evidence...")
         try:
             await synthesis_agent.execute(session)
+            synthesis_agent.record_stage(session, "synthesis", StageResult.SUCCESS)
             await self._emit_event(session, synthesis_agent.name, AgentStatus.COMPLETED,
                                    f"Found {len(session.contradictions)} conflicts, {len(session.consensus)} clusters")
         except Exception as e:
             logger.error(f"Synthesis failed: {e}")
+            synthesis_agent.record_stage(session, "synthesis", StageResult.FAILED,
+                                         "Contradiction/consensus analysis failed")
             await self._emit_event(session, synthesis_agent.name, AgentStatus.FAILED, str(e))
 
         # Phase 14-16: Innovation (Gaps, Novelty, Experiments)
@@ -399,10 +427,13 @@ class ResearchPipeline:
         await self._emit_event(session, innovation_agent.name, AgentStatus.RUNNING, "Detecting gaps and designing experiments...")
         try:
             await innovation_agent.execute(session)
+            innovation_agent.record_stage(session, "innovation", StageResult.SUCCESS)
             await self._emit_event(session, innovation_agent.name, AgentStatus.COMPLETED,
                                    f"Identified {len(session.gaps)} gaps, {len(session.missing_experiments)} missing experiments")
         except Exception as e:
             logger.error(f"Innovation failed: {e}")
+            innovation_agent.record_stage(session, "innovation", StageResult.FAILED,
+                                           "Gap detection / experiment design failed")
             await self._emit_event(session, innovation_agent.name, AgentStatus.FAILED, str(e))
 
         # Phase 17: Red Team
@@ -410,11 +441,14 @@ class ResearchPipeline:
         await self._emit_event(session, red_team_agent.name, AgentStatus.RUNNING, "Adversarial review of findings...")
         try:
             await red_team_agent.execute(session)
+            red_team_agent.record_stage(session, "red_team", StageResult.SUCCESS)
             confidence = session.red_team.final_confidence.value if session.red_team else "N/A"
             await self._emit_event(session, red_team_agent.name, AgentStatus.COMPLETED,
                                    f"Challenged findings. Confidence: {confidence}")
         except Exception as e:
             logger.error(f"Red team failed: {e}")
+            red_team_agent.record_stage(session, "red_team", StageResult.FAILED,
+                                        "Adversarial review failed — conclusions lack independent critique")
             await self._emit_event(session, red_team_agent.name, AgentStatus.FAILED, str(e))
 
         # Phase 18: Post-Synthesis Intelligence (Audit, Independence weighting)
@@ -422,117 +456,41 @@ class ResearchPipeline:
         await self._emit_event(session, intelligence_agent.name, AgentStatus.RUNNING, "Finalizing integrity audit...")
         try:
             await intelligence_agent.execute(session, phase="post_synthesis")
+            intelligence_agent.record_stage(session, "post_synthesis_intelligence", StageResult.SUCCESS)
             integrity = session.audit.overall_integrity if session.audit else "Unknown"
             await self._emit_event(session, intelligence_agent.name, AgentStatus.COMPLETED,
                                    f"Audit complete. Integrity: {integrity}")
         except Exception as e:
             logger.error(f"Post-synthesis intelligence failed: {e}")
+            intelligence_agent.record_stage(session, "post_synthesis_intelligence", StageResult.FAILED,
+                                            "Integrity audit failed")
             await self._emit_event(session, intelligence_agent.name, AgentStatus.FAILED, str(e))
 
-        session.status = SessionStatus.REPORT_READY
+        # Determine final session status based on quality
+        failed_stages = [k for k, v in session.stage_results.items() if v == StageResult.FAILED.value]
+        if len(failed_stages) >= 3 or "retrieval" in failed_stages:
+            session.status = SessionStatus.ERROR
+            session.quality_state = "failed"
+        elif session.quality_state == "degraded":
+            session.status = SessionStatus.COMPLETED_WITH_WARNINGS
+        else:
+            session.status = SessionStatus.REPORT_READY
+
         session.update_stats()
         await self._emit_event(session, "Pipeline", AgentStatus.COMPLETED,
-                               "Research complete!",
-                               detail=f"Analyzed {len(session.papers)} papers, extracted {len(session.claims)} claims, "
+                               f"Research {'complete' if session.quality_state == 'complete' else 'complete with warnings'}!",
+                               detail=f"Quality: {session.quality_state}. Analyzed {len(session.papers)} papers, extracted {len(session.claims)} claims, "
                                       f"tracked {len(session.claim_propagations)} propagations, "
                                       f"detected {len(session.citation_echoes)} echo chambers, "
-                                      f"identified {len(session.dead_ends)} dead ends")
+                                      f"identified {len(session.dead_ends)} dead ends. "
+                                      f"{'Degraded stages: ' + ', '.join(failed_stages) if failed_stages else ''}")
 
-    # ─── Agent Implementations ───────────────────────────────
 
-    async def _plan_research(self, question: str) -> ResearchPlan:
-        """Use LLM to generate a structured research plan."""
-        prompt = PLANNER_V1.format(question=question)
-        return await self.llm.structured_generate(
-            prompt, ResearchPlan, system_prompt=SYSTEM_PROMPT
-        )
 
-    def _deduplicate_papers(self, papers: list[Paper]) -> list[Paper]:
-        """Deduplicate papers by DOI and normalized title."""
-        seen_dois = set()
-        seen_titles = set()
-        unique = []
-        for p in papers:
-            # DOI-based dedup
-            if p.doi:
-                doi_lower = p.doi.lower().strip()
-                if doi_lower in seen_dois:
-                    continue
-                seen_dois.add(doi_lower)
-
-            # Title-based dedup
-            norm_title = self._normalize_title(p.title)
-            if norm_title in seen_titles:
-                continue
-            seen_titles.add(norm_title)
-            unique.append(p)
-        return unique
-
-    def _normalize_title(self, title: str) -> str:
-        """Normalize title for deduplication."""
-        t = title.lower().strip()
-        t = re.sub(r'[^\w\s]', '', t)
-        t = re.sub(r'\s+', ' ', t)
-        return t
-
-    def _rank_papers(self, papers: list[Paper], question: str) -> list[Paper]:
-        """Rank papers using a deterministic hybrid scoring heuristic."""
-        import math
-        
-        q_clean = re.sub(r'[^\w\s]', '', question.lower())
-        q_words = [w for w in q_clean.split() if len(w) > 3]
-        if not q_words:
-            q_words = q_clean.split()
-
-        for p in papers:
-            title_clean = re.sub(r'[^\w\s]', '', p.title.lower())
-            abstract_clean = re.sub(r'[^\w\s]', '', (p.abstract or "").lower())
-            
-            exact_phrase_score = 0.0
-            if q_clean and q_clean in title_clean:
-                exact_phrase_score += 1.0
-            if q_clean and q_clean in abstract_clean:
-                exact_phrase_score += 0.5
-                
-            title_matches = sum(1 for w in q_words if w in title_clean.split())
-            abstract_matches = sum(1 for w in q_words if w in abstract_clean.split())
-            
-            title_overlap = title_matches / max(len(q_words), 1)
-            abstract_overlap = min(1.0, abstract_matches / max(len(q_words), 1))
-            
-            relevance = min(1.0, (0.5 * title_overlap) + (0.3 * abstract_overlap) + (0.2 * exact_phrase_score))
-
-            # Recency
-            recency = 0.0
-            if p.year:
-                recency = min(1.0, max(0.0, (p.year - 2018) / 7))
-
-            # Citation influence (log scale)
-            citation_score = 0.0
-            if p.citation_count and p.citation_count > 0:
-                citation_score = min(1.0, math.log(p.citation_count + 1) / 6)
-
-            # Completeness
-            completeness = 0.5 if p.abstract else 0.0
-
-            # Composite score
-            p.relevance_score = round(relevance, 3)
-            p.research_score = round(
-                0.40 * relevance + 0.25 * recency + 0.20 * citation_score + 0.15 * completeness,
-                3
-            )
-            p.score_components = {
-                "relevance": round(relevance, 3),
-                "recency": round(recency, 3),
-                "citation_influence": round(citation_score, 3),
-                "completeness": round(completeness, 3),
-            }
-
-        papers.sort(key=lambda p: p.research_score, reverse=True)
-        return papers
+    # ─── Helpers Used by API Endpoints ────────────────────────
 
     async def _analyze_paper(self, paper: Paper) -> PaperAnalysis:
-        """Deep analysis of a single paper using LLM."""
+        """Deep analysis of a single paper using LLM (used by PDF ingest endpoint)."""
         full_text = ""
         if paper.sections:
             full_text = "\n".join(f"## {k}\n{v}" for k, v in paper.sections.items())
@@ -578,122 +536,10 @@ class ResearchPipeline:
 
         return analysis
 
-    def _build_citation_graph(self, session: ResearchSession) -> list[CitationEdge]:
-        """Build citation edges from paper metadata."""
-        edges = []
-        paper_titles = {self._normalize_title(p.title): p.id for p in session.papers.values()}
-        # Simple: detect if any paper title is mentioned in another paper's abstract/text
-        for pid, paper in session.papers.items():
-            text = (paper.abstract or "").lower()
-            for title_norm, ref_id in paper_titles.items():
-                if ref_id != pid and title_norm in text:
-                    edges.append(CitationEdge(
-                        source_paper_id=pid, target_paper_id=ref_id,
-                        is_inferred=True, context="Inferred from textual overlap in abstract"
-                    ))
-        return edges
 
-    async def _detect_contradictions(self, session: ResearchSession) -> list[Contradiction]:
-        """Detect and classify contradictions between claims."""
-        contradictions = []
-        claims = session.claims
-        if len(claims) < 2:
-            return contradictions
-
-        # Pairwise comparison for claims from different papers
-        pairs_to_check = []
-        for i in range(len(claims)):
-            for j in range(i + 1, len(claims)):
-                if claims[i].paper_id != claims[j].paper_id:
-                    pairs_to_check.append((claims[i], claims[j]))
-
-        # Limit pairs for API budget
-        pairs_to_check = pairs_to_check[:10]
-
-        for claim_a, claim_b in pairs_to_check:
-            paper_a = session.papers.get(claim_a.paper_id)
-            paper_b = session.papers.get(claim_b.paper_id)
-            if not paper_a or not paper_b:
-                continue
-
-            prompt = CONTRADICTION_ANALYSIS_V1.format(
-                paper_a_title=paper_a.title, paper_a_year=paper_a.year or "Unknown",
-                claim_a=claim_a.statement, conditions_a=", ".join(claim_a.conditions),
-                metric_a=claim_a.metric or "N/A", evidence_a=claim_a.evidence_value or "N/A",
-                paper_b_title=paper_b.title, paper_b_year=paper_b.year or "Unknown",
-                claim_b=claim_b.statement, conditions_b=", ".join(claim_b.conditions),
-                metric_b=claim_b.metric or "N/A", evidence_b=claim_b.evidence_value or "N/A",
-            )
-            try:
-                result = await self.llm.structured_generate(prompt, Contradiction, system_prompt=SYSTEM_PROMPT)
-                result.claim_a_id = claim_a.id
-                result.claim_b_id = claim_b.id
-                result.paper_a_id = claim_a.paper_id
-                result.paper_b_id = claim_b.paper_id
-                result.claim_a_text = claim_a.statement
-                result.claim_b_text = claim_b.statement
-                result.paper_a_summary = f"{paper_a.title} ({paper_a.year})"
-                result.paper_b_summary = f"{paper_b.title} ({paper_b.year})"
-
-                if result.classification != ContradictionType.AGREEMENT:
-                    contradictions.append(result)
-            except Exception as e:
-                logger.warning(f"Contradiction analysis failed: {e}")
-
-        return contradictions
-
-    async def _analyze_consensus(self, session: ResearchSession) -> list[ConsensusFinding]:
-        """Analyze consensus across papers."""
-        claims_summary = "\n".join(
-            f"- [{c.paper_id}] {c.statement} (confidence: {c.confidence.value})"
-            for c in session.claims
-        )
-        prompt = CONSENSUS_ANALYSIS_V1.format(
-            question=session.question,
-            claims_summary=claims_summary or "No claims extracted"
-        )
-
-        try:
-            result = await self.llm.structured_generate(prompt, ConsensusList, system_prompt=SYSTEM_PROMPT)
-            return result.findings
-        except Exception as e:
-            logger.warning(f"Consensus analysis failed: {e}")
-            return []
-
-    async def _detect_gaps(self, session: ResearchSession) -> list[ResearchGap]:
-        """Detect research gaps from analyzed literature."""
-        papers_summary = "\n".join(
-            f"- [{p.id}] {p.title} ({p.year}): {p.abstract[:200] if p.abstract else 'No abstract'}"
-            for p in list(session.papers.values())[:15]
-        )
-        claims_summary = "\n".join(f"- {c.statement}" for c in session.claims[:20])
-        contradictions_summary = "\n".join(
-            f"- {c.claim_a_text} vs {c.claim_b_text}: {c.classification.value}"
-            for c in session.contradictions
-        )
-        methods_summary = "\n".join(
-            f"- {m.model_architecture} on {m.dataset}" for m in session.methods if m.model_architecture
-        )
-        datasets_summary = ", ".join(set(m.dataset for m in session.methods if m.dataset))
-
-        prompt = GAP_DETECTION_V1.format(
-            question=session.question,
-            papers_summary=papers_summary or "No papers",
-            claims_summary=claims_summary or "No claims",
-            contradictions_summary=contradictions_summary or "No contradictions",
-            methods_summary=methods_summary or "No methods",
-            datasets_summary=datasets_summary or "No datasets"
-        )
-
-        try:
-            result = await self.llm.structured_generate(prompt, GapList, system_prompt=SYSTEM_PROMPT)
-            return result.gaps
-        except Exception as e:
-            logger.warning(f"Gap detection failed: {e}")
-            return []
 
     async def analyze_novelty(self, session_id: str, idea: str) -> Optional[NoveltyAssessment]:
-        """Analyze novelty of a proposed research idea."""
+        """Analyze novelty of a proposed research idea (API endpoint)."""
         session = self.sessions.get(session_id)
         if not session:
             return None
@@ -721,88 +567,6 @@ class ResearchPipeline:
             logger.error(f"Novelty analysis failed: {e}")
             return None
 
-    async def _detect_missing_experiments(self, session: ResearchSession) -> list[MissingExperiment]:
-        """Detect missing experimental combinations based on gaps and contradictions."""
-        gaps_text = "\n".join([f"- {g.title}: {g.description}" for g in session.gaps])
-        contradictions_text = "\n".join([f"- {c.claim_a_text} vs {c.claim_b_text}" for c in session.contradictions])
-        
-        prompt = MISSING_EXPERIMENTS_V1.format(
-            gaps=gaps_text if gaps_text else "None explicitly identified.",
-            contradictions=contradictions_text if contradictions_text else "None explicitly identified."
-        )
-        
-        result = await self.llm.structured_generate(prompt, MissingExperimentList, system_prompt=SYSTEM_PROMPT)
-        return result.experiments if result else []
-
-    async def _design_experiment(self, session: ResearchSession) -> ExperimentProposal:
-        """Design experiment for top research gap."""
-        gap = session.gaps[0]
-        context = "\n".join(
-            f"- {p.title} ({p.year})" for p in list(session.papers.values())[:10]
-        )
-        methods = ", ".join(set(m.model_architecture for m in session.methods if m.model_architecture))
-        datasets = ", ".join(set(m.dataset for m in session.methods if m.dataset))
-        metrics = ", ".join(set(m for method in session.methods for m in method.metrics))
-
-        prompt = EXPERIMENT_DESIGN_V1.format(
-            gap=f"{gap.title}: {gap.description}",
-            context=context,
-            methods=methods or "Various deep learning methods",
-            datasets=datasets or "No dataset metadata extracted",
-            metrics=metrics or "No evaluation metrics extracted"
-        )
-
-        result = await self.llm.structured_generate(prompt, ExperimentProposal, system_prompt=SYSTEM_PROMPT)
-        result.gap_id = gap.id
-        return result
-
-    async def _red_team(self, session: ResearchSession) -> RedTeamResult:
-        """Red-team the research conclusions."""
-        conclusions = []
-        for c in session.consensus[:5]:
-            conclusions.append(f"- {c.statement} ({c.status.value})")
-        for g in session.gaps[:3]:
-            conclusions.append(f"- Gap: {g.title}")
-
-        evidence_summary = "\n".join(
-            f"- [{e.paper_id}] {e.description}" for e in session.evidence[:15]
-        )
-
-        prompt = RED_TEAM_V1.format(
-            conclusions="\n".join(conclusions) or "No major conclusions",
-            evidence=evidence_summary or "No evidence"
-        )
-
-        return await self.llm.structured_generate(prompt, RedTeamResult, system_prompt=SYSTEM_PROMPT)
-
-    def _run_audit(self, session: ResearchSession) -> AuditResult:
-        """Run integrity audit — deterministic checks."""
-        total_claims = len(session.claims)
-        claims_with_evidence = sum(1 for c in session.claims
-                                   if any(e.claim_id == c.id for e in session.evidence))
-        unsupported = total_claims - claims_with_evidence
-        
-        verified_papers = sum(1 for p in session.papers.values() 
-                              if p.doi or (p.source_provider and p.source_provider not in ["upload", "demo_inferred"]))
-
-        bib_validated = all(
-            p.title and p.authors and (p.year or p.venue or p.doi) 
-            for p in session.papers.values()
-        )
-
-        return AuditResult(
-            total_claims=total_claims,
-            claims_with_evidence_links=claims_with_evidence,
-            unsupported_claims=unsupported,
-            identifiable_source_metadata=verified_papers,
-            citations_total=len(session.papers),
-            contradictions_represented=len(session.contradictions) > 0,
-            bibliographic_metadata_complete=bib_validated,
-            uncertainty_levels_present=any(c.confidence for c in session.claims),
-            issues=[f"{unsupported} claims lack direct evidence linkage"] if unsupported > 0 else [],
-            warnings=["Analysis includes unverified or uploaded PDFs — not fully peer-reviewed"] if verified_papers < len(session.papers) else [],
-            overall_integrity="passed" if unsupported <= 2 and bib_validated else "warnings" if unsupported <= 5 else "failed"
-        )
 
     async def explain_why(self, session_id: str, target_type: str, target_id: str) -> Optional[WhyExplanation]:
         """Generate a grounded, traceable explainability dossier for any AI-generated finding."""

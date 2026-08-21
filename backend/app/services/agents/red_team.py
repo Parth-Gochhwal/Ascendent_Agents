@@ -27,12 +27,21 @@ class RedTeamAgent(BaseAgent):
             conclusions_list.append(f"- [PROPOSED EXPERIMENT] {session.experiment.hypothesis} (Addresses: {session.experiment.addresses_gap})")
         conclusions = "\n".join(conclusions_list) if conclusions_list else f"Research Question: {session.question}"
 
-        # Summarize evidence
+        # Summarize evidence — risk-ranked, not positional
+        from backend.app.services.research_intelligence import rank_red_team_evidence
+        ranked_evidence = rank_red_team_evidence(session, max_items=15)
         evidence_list = []
-        for e in session.evidence[:15]:
+        for e in ranked_evidence:
             evidence_list.append(f"- [{e.evidence_type.upper()}] {e.description} (Metric: {e.metric or 'N/A'}, Value: {e.quantitative_value or 'N/A'}, Dataset: {e.dataset or 'N/A'})")
         if session.citation_echoes:
-            evidence_list.append(f"\nNOTE: {len(session.citation_echoes)} potential citation echo clusters detected in corpus.")
+            evidence_list.append(f"\nCITATION ECHO WARNING: {len(session.citation_echoes)} potential citation echo clusters detected — apparent consensus may be illusory.")
+        # Surface reproducibility risks
+        low_repro = [(pid, p) for pid, p in session.reproducibility_profiles.items() if p.completeness_score < 0.5]
+        if low_repro:
+            evidence_list.append(f"\nREPRODUCIBILITY WARNING: {len(low_repro)}/{len(session.reproducibility_profiles)} papers have low reproducibility completeness (<0.5).")
+        # Surface dead-end context
+        if session.dead_ends:
+            evidence_list.append(f"\nDEAD ENDS: {len(session.dead_ends)} approaches identified as failed or limited — check if conclusions rely on these.")
         evidence = "\n".join(evidence_list) if evidence_list else "No direct quantitative evidence extracted."
 
         prompt = RED_TEAM_V1.format(

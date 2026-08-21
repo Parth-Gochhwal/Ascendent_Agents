@@ -42,14 +42,13 @@ class SynthesisAgent(BaseAgent):
         
         pairs_to_check = ri.generate_contradiction_candidates(claims, session.papers)
         if not pairs_to_check:
-            # Fallback: check cross-paper pairs directly if <= 6 total claims
+            # Fallback: check cross-paper pairs directly if very few claims
             for i in range(len(claims)):
                 for j in range(i + 1, len(claims)):
                     if claims[i].paper_id != claims[j].paper_id:
                         pairs_to_check.append((claims[i], claims[j]))
-        
-        # Limit pairs for API budget
-        pairs_to_check = pairs_to_check[:10]
+            # Fallback cap — only reached when generate_contradiction_candidates returns empty
+            pairs_to_check = pairs_to_check[:12]
 
         for claim_a, claim_b in pairs_to_check:
             paper_a = session.papers.get(claim_a.paper_id)

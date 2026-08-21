@@ -93,6 +93,153 @@ def build_citation_graph(session: ResearchSession) -> list[CitationEdge]:
     return edges
 
 
+# ─── Contradiction Candidate Ranking ─────────────────────
+
+def generate_contradiction_candidates(
+    claims: list[Claim],
+    papers: dict[str, 'Paper'],
+    max_pairs: int = 12,
+) -> list[tuple[Claim, Claim]]:
+    """Generate ranked contradiction candidate pairs using deterministic heuristics.
+
+    Scores each cross-paper claim pair by:
+    - Shared metric/topic overlap (higher = more likely contradiction)
+    - Opposing signal words (e.g. "increases" vs "decreases")
+    - Evidence strength differential (high-confidence disagreements matter most)
+    - Shared condition overlap (same conditions → more meaningful conflict)
+    
+    Returns the top-N highest-priority pairs for LLM adjudication.
+    """
+    if len(claims) < 2:
+        return []
+
+    OPPOSING_SIGNALS = [
+        ("increase", "decrease"), ("improve", "degrade"), ("better", "worse"),
+        ("higher", "lower"), ("outperform", "underperform"), ("gain", "loss"),
+        ("positive", "negative"), ("efficient", "inefficient"), ("fast", "slow"),
+        ("accurate", "inaccurate"), ("robust", "fragile"), ("enhance", "diminish"),
+        ("significant", "insignificant"),
+    ]
+
+    def _signal_opposition(text_a: str, text_b: str) -> float:
+        """Check if claims contain opposing directional signals."""
+        a_lower, b_lower = text_a.lower(), text_b.lower()
+        for pos, neg in OPPOSING_SIGNALS:
+            if (pos in a_lower and neg in b_lower) or (neg in a_lower and pos in b_lower):
+                return 1.0
+        return 0.0
+
+    def _metric_overlap(a: Claim, b: Claim) -> float:
+        """Score metric field alignment."""
+        if a.metric and b.metric:
+            ma, mb = a.metric.lower().strip(), b.metric.lower().strip()
+            if ma == mb:
+                return 1.0
+            # Partial overlap (shared words)
+            a_words = set(ma.split())
+            b_words = set(mb.split())
+            if a_words & b_words:
+                return 0.5
+        return 0.0
+
+    def _condition_overlap(a: Claim, b: Claim) -> float:
+        """Claims with shared conditions are more meaningful to compare."""
+        if not a.conditions or not b.conditions:
+            return 0.0
+        a_set = set(c.lower().strip() for c in a.conditions)
+        b_set = set(c.lower().strip() for c in b.conditions)
+        if not a_set or not b_set:
+            return 0.0
+        return len(a_set & b_set) / max(len(a_set | b_set), 1)
+
+    def _evidence_strength_score(claim: Claim) -> float:
+        """Higher evidence strength → higher priority for contradiction checking."""
+        if claim.strength:
+            return claim.strength.composite_score
+        conf_map = {"high": 0.9, "medium": 0.6, "low": 0.3, "uncertain": 0.2, "insufficient": 0.1}
+        return conf_map.get(claim.confidence.value, 0.5)
+
+    # Generate all cross-paper pairs with scores
+    scored_pairs: list[tuple[float, Claim, Claim]] = []
+    for i in range(len(claims)):
+        for j in range(i + 1, len(claims)):
+            a, b = claims[i], claims[j]
+            if a.paper_id == b.paper_id:
+                continue
+            
+            score = 0.0
+            score += 3.0 * _signal_opposition(a.statement, b.statement)
+            score += 2.0 * _metric_overlap(a, b)
+            score += 1.5 * _condition_overlap(a, b)
+            # High-evidence disagreements are more important
+            avg_strength = (_evidence_strength_score(a) + _evidence_strength_score(b)) / 2
+            score += 1.0 * avg_strength
+            # Boost if same metric but different values
+            if a.evidence_value and b.evidence_value and a.metric and b.metric:
+                if a.metric.lower() == b.metric.lower() and a.evidence_value != b.evidence_value:
+                    score += 2.0
+
+            scored_pairs.append((score, a, b))
+
+    # Sort by score descending, take top-N
+    scored_pairs.sort(key=lambda x: x[0], reverse=True)
+    return [(a, b) for _, a, b in scored_pairs[:max_pairs]]
+
+
+# ─── Red Team Evidence Ranking ────────────────────────────
+
+def rank_red_team_evidence(session: ResearchSession, max_items: int = 15) -> list:
+    """Select evidence for Red Team review based on risk signals (deterministic).
+    
+    Prioritizes:
+    1. Evidence backing contradicted or contested claims
+    2. Evidence from papers with low reproducibility scores
+    3. Evidence from claims with citation echo dependencies
+    4. Evidence with low directness or scope_alignment
+    """
+    evidence_scores: list[tuple[float, 'Evidence']] = []
+    
+    # Pre-compute risk indices
+    contradicted_claim_ids = set()
+    for c in session.contradictions:
+        contradicted_claim_ids.add(c.claim_a_id)
+        contradicted_claim_ids.add(c.claim_b_id)
+    
+    echo_paper_ids = set()
+    for echo in session.citation_echoes:
+        echo_paper_ids.update(echo.echo_paper_ids)
+    
+    low_repro_paper_ids = set()
+    for pid, prof in session.reproducibility_profiles.items():
+        if prof.completeness_score < 0.5:
+            low_repro_paper_ids.add(pid)
+
+    for ev in session.evidence:
+        score = 0.0
+        # Risk signal 1: backs a contradicted claim
+        if ev.claim_id in contradicted_claim_ids:
+            score += 3.0
+        # Risk signal 2: from low-reproducibility paper
+        if ev.paper_id in low_repro_paper_ids:
+            score += 2.0
+        # Risk signal 3: from echo chamber paper
+        if ev.paper_id in echo_paper_ids:
+            score += 1.5
+        # Risk signal 4: low evidence strength
+        claim = next((c for c in session.claims if c.id == ev.claim_id), None)
+        if claim and claim.strength:
+            if claim.strength.directness < 0.4:
+                score += 1.0
+            if claim.strength.scope_alignment < 0.4:
+                score += 1.0
+        # Baseline score for all evidence
+        score += 0.1
+        evidence_scores.append((score, ev))
+    
+    evidence_scores.sort(key=lambda x: x[0], reverse=True)
+    return [ev for _, ev in evidence_scores[:max_items]]
+
+
 # ─── Citation Echo Detection ─────────────────────────────
 
 def detect_citation_echoes(session: ResearchSession) -> list[CitationEchoCluster]:
@@ -296,108 +443,89 @@ def compute_reproducibility_profile(paper: Paper, analysis: Optional[PaperAnalys
     # Compute completeness
     profile.compute_completeness()
 
-    # Identify risk factors
+    # Generate structured reproducibility blockers
+    from backend.app.models.research import ReproducibilityBlocker
+
     if profile.code_available in (Availability.NOT_FOUND, Availability.UNAVAILABLE):
+        profile.blockers.append(ReproducibilityBlocker(
+            category="CODE_UNAVAILABLE",
+            severity="critical",
+            affected_component="implementation",
+            evidence="No source code or reference implementation found",
+            recommended_remediation="Request code from authors or re-implement from paper description"
+        ))
         profile.risk_factors.append("No code available — implementation details unverifiable")
+
     if profile.random_seeds_reported in (Availability.UNKNOWN, Availability.NOT_FOUND):
+        profile.blockers.append(ReproducibilityBlocker(
+            category="MISSING_RANDOM_SEED",
+            severity="high",
+            affected_component="training",
+            evidence="Random seeds not reported in paper or supplementary material",
+            recommended_remediation="Run with ≥3 seeds and report mean ± std"
+        ))
         profile.risk_factors.append("Random seeds not reported — results may not be exactly reproducible")
+
+    if profile.dataset_available in (Availability.NOT_FOUND, Availability.UNAVAILABLE):
+        profile.blockers.append(ReproducibilityBlocker(
+            category="DATASET_UNAVAILABLE",
+            severity="critical",
+            affected_component="data",
+            evidence="Training/evaluation data not publicly accessible",
+            recommended_remediation="Use comparable public benchmarks or request data access"
+        ))
+
+    if profile.data_preprocessing_documented in (Availability.NOT_FOUND, Availability.UNKNOWN):
+        profile.blockers.append(ReproducibilityBlocker(
+            category="MISSING_PREPROCESSING_SPEC",
+            severity="medium",
+            affected_component="data pipeline",
+            evidence="Data preprocessing steps not documented",
+            recommended_remediation="Document all preprocessing including normalization, tokenization, and splitting"
+        ))
+
+    if profile.hyperparameters_documented in (Availability.NOT_FOUND, Availability.UNKNOWN):
+        profile.blockers.append(ReproducibilityBlocker(
+            category="MISSING_HYPERPARAMETERS",
+            severity="high",
+            affected_component="model configuration",
+            evidence="Hyperparameters not fully reported",
+            recommended_remediation="Provide complete hyperparameter table in paper or supplementary"
+        ))
+
     if profile.statistical_reporting in (Availability.UNKNOWN, Availability.NOT_FOUND):
+        profile.blockers.append(ReproducibilityBlocker(
+            category="MISSING_STATISTICAL_TESTS",
+            severity="medium",
+            affected_component="evaluation",
+            evidence="No statistical significance tests (p-values, confidence intervals) reported",
+            recommended_remediation="Report statistical significance with appropriate tests (e.g., paired t-test, bootstrap CI)"
+        ))
         profile.risk_factors.append("No statistical significance tests reported")
+
     if profile.hardware_environment_documented in (Availability.UNKNOWN, Availability.NOT_FOUND):
+        profile.blockers.append(ReproducibilityBlocker(
+            category="MISSING_HARDWARE_SPEC",
+            severity="low",
+            affected_component="environment",
+            evidence="Hardware/software environment not documented",
+            recommended_remediation="Document GPU model, driver version, framework version, and OS"
+        ))
         profile.risk_factors.append("Hardware/environment not documented — performance may vary")
+
     if profile.external_validation in (Availability.UNKNOWN, Availability.NOT_FOUND):
         profile.risk_factors.append("No external validation — results only verified on original setup")
 
     profile.explanation = (
         f"Reproducibility completeness: {profile.completeness_score:.0%}. "
         f"{len(profile.missing_components)} components missing, "
-        f"{len(profile.risk_factors)} risk factors identified."
+        f"{len(profile.blockers)} blockers identified ({sum(1 for b in profile.blockers if b.severity == 'critical')} critical), "
+        f"{len(profile.risk_factors)} risk factors."
     )
 
     return profile
 
 
-# ─── Contradiction Candidate Generation ──────────────────
-
-def generate_contradiction_candidates(claims: list[Claim], papers: dict[str, Paper],
-                                       max_candidates: int = 20) -> list[tuple[Claim, Claim]]:
-    """Pre-filter contradiction candidates using deterministic heuristics.
-
-    This avoids O(N²) LLM calls by only sending likely contradictions for adjudication.
-    """
-    candidates = []
-    if len(claims) < 2:
-        return candidates
-
-    # Group claims by topic/metric
-    claims_by_metric: dict[str, list[Claim]] = defaultdict(list)
-    for claim in claims:
-        if claim.metric:
-            claims_by_metric[claim.metric.lower()].append(claim)
-        else:
-            claims_by_metric["general"].append(claim)
-
-    # Within each metric group, find cross-paper pairs with overlapping conditions
-    for metric, group in claims_by_metric.items():
-        for i in range(len(group)):
-            for j in range(i + 1, len(group)):
-                c1, c2 = group[i], group[j]
-                if c1.paper_id == c2.paper_id:
-                    continue
-
-                # Score candidate likelihood
-                score = _contradiction_likelihood_score(c1, c2, papers)
-                if score > 0.3:
-                    candidates.append((c1, c2, score))
-
-    # Sort by likelihood and take top N
-    candidates.sort(key=lambda x: x[2], reverse=True)
-    return [(c1, c2) for c1, c2, _ in candidates[:max_candidates]]
-
-
-def _contradiction_likelihood_score(c1: Claim, c2: Claim, papers: dict[str, Paper]) -> float:
-    """Score how likely two claims contradict each other (0-1)."""
-    score = 0.0
-
-    # Same metric is a strong signal
-    if c1.metric and c2.metric and c1.metric.lower() == c2.metric.lower():
-        score += 0.3
-
-    # Overlapping conditions suggest comparable claims
-    c1_conditions = set(c.lower() for c in c1.conditions)
-    c2_conditions = set(c.lower() for c in c2.conditions)
-    if c1_conditions and c2_conditions:
-        overlap = len(c1_conditions & c2_conditions) / max(len(c1_conditions | c2_conditions), 1)
-        score += 0.2 * overlap
-
-    # Check for opposing keywords in statements
-    s1 = c1.statement.lower()
-    s2 = c2.statement.lower()
-    opposing_pairs = [
-        ("outperform", "underperform"), ("better", "worse"), ("superior", "inferior"),
-        ("improve", "degrade"), ("increase", "decrease"), ("higher", "lower"),
-        ("not justified", "justified"), ("fails", "succeeds"),
-        ("matches", "degrades"), ("matches", "suffers"), ("matches", "underperforms"),
-        ("effective", "ineffective"), ("accurate", "inaccurate"), ("optimal", "suboptimal"),
-        ("viable", "unviable"), ("scalable", "unscalable"), ("sufficient", "insufficient"),
-    ]
-    for pos, neg in opposing_pairs:
-        if (pos in s1 and neg in s2) or (neg in s1 and pos in s2):
-            score += 0.35
-            break
-
-    # Overlapping methods/architectures/concepts mentioned
-    method_keywords = {
-        "gnn", "gan", "lstm", "gru", "transformer", "cnn", "gat", "gcn", "mlp",
-        "attention", "linear", "sparse", "dense", "recurrent", "mamba", "ssm",
-        "diffusion", "vae", "bert", "gpt", "llm", "lora", "adapter", "moe"
-    }
-    m1 = set(w for w in re.sub(r'[^\w\s]', '', s1).split() if w in method_keywords)
-    m2 = set(w for w in re.sub(r'[^\w\s]', '', s2).split() if w in method_keywords)
-    if m1 & m2:
-        score += 0.25
-
-    return min(score, 1.0)
 
 
 # ─── Dead-End Detection ─────────────────────────────────
@@ -455,15 +583,37 @@ def detect_dead_ends(session: ResearchSession) -> list[DeadEnd]:
                             if method_name in lim.lower():
                                 failure_conditions.append(lim)
 
+                # Collect dataset/metric context from losing papers
+                datasets_seen = set()
+                metrics_seen = set()
+                for pid in losing_papers:
+                    a = session.analyses.get(pid)
+                    if a:
+                        for m in a.methods:
+                            if m.dataset:
+                                datasets_seen.add(m.dataset)
+                            metrics_seen.update(m.metrics)
+
+                status = DeadEndStatus.SUPERSEDED if len(losing_papers) >= 3 else DeadEndStatus.LIMITED
+                if failure_conditions:
+                    status = DeadEndStatus.CONDITIONAL_FAILURE
+                if len(losing_papers) >= 3 and not failure_conditions:
+                    status = DeadEndStatus.REPEATEDLY_UNDERPERFORMING
+
                 dead_ends.append(DeadEnd(
                     approach=method_name.upper(),
                     description=f"{method_name.upper()} consistently outperformed by newer methods "
                                f"across {len(losing_papers)} studies",
                     supporting_papers=losing_papers,
                     failure_evidence=[f"Used as baseline and outperformed in {len(losing_papers)} papers"],
+                    failure_conditions=failure_conditions[:5],
+                    task="general" if not datasets_seen else f"evaluation on {', '.join(sorted(datasets_seen)[:3])}",
+                    dataset=", ".join(sorted(datasets_seen)[:3]) if datasets_seen else "",
+                    metric=", ".join(sorted(metrics_seen)[:3]) if metrics_seen else "",
+                    failure_reason="consistently_outperformed" if not failure_conditions else "conditional_limitation",
                     attempt_count=len(losing_papers),
-                    status=DeadEndStatus.SUPERSEDED if len(losing_papers) >= 3 else DeadEndStatus.LIMITED,
-                    confidence=EvidenceConfidence.MEDIUM if len(losing_papers) >= 2 else EvidenceConfidence.LOW,
+                    status=status,
+                    confidence=EvidenceConfidence.HIGH if len(losing_papers) >= 3 else EvidenceConfidence.MEDIUM,
                 ))
 
     # Check claims for explicit failure conditions
@@ -481,14 +631,36 @@ def detect_dead_ends(session: ResearchSession) -> list[DeadEnd]:
                     existing.attempt_count += 1
                     existing.failure_evidence.append(claim.statement)
             else:
+                # Determine failure reason from keywords
+                failure_reason = "general_limitation"
+                if "fail" in stmt_lower:
+                    failure_reason = "explicit_failure"
+                elif "not suitable" in stmt_lower or "not effective" in stmt_lower:
+                    failure_reason = "unsuitability"
+                elif "degrade" in stmt_lower or "worse" in stmt_lower:
+                    failure_reason = "performance_degradation"
+                elif "underperform" in stmt_lower:
+                    failure_reason = "underperformance"
+                elif "insufficient" in stmt_lower or "limited" in stmt_lower:
+                    failure_reason = "insufficient_capability"
+
+                # Use conditional status if conditions present
+                status = DeadEndStatus.LIMITED
+                if claim.conditions:
+                    status = DeadEndStatus.WEAK_UNDER_SPECIFIC_CONDITIONS
+
                 dead_ends.append(DeadEnd(
                     approach=_extract_approach_name(claim.statement),
                     description=claim.statement,
                     supporting_papers=[claim.paper_id],
                     failure_evidence=[claim.statement],
                     failure_conditions=claim.conditions,
+                    task=claim.metric or "",
+                    dataset="",
+                    metric=claim.metric or "",
+                    failure_reason=failure_reason,
                     attempt_count=1,
-                    status=DeadEndStatus.LIMITED,
+                    status=status,
                     confidence=claim.confidence,
                     success_conditions_if_any=[],
                 ))

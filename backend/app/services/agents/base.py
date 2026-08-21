@@ -1,9 +1,10 @@
 from abc import ABC, abstractmethod
-from backend.app.models.research import ResearchSession
+from backend.app.models.research import ResearchSession, StageResult
 from backend.app.providers.llm_provider import LLMProvider
 import logging
 
 logger = logging.getLogger(__name__)
+
 
 class BaseAgent(ABC):
     """
@@ -19,6 +20,11 @@ class BaseAgent(ABC):
         """The display name of the agent (e.g., 'Planning Agent')."""
         pass
 
+    @property
+    def description(self) -> str:
+        """A short description of the agent's purpose."""
+        return ""
+
     @abstractmethod
     async def execute(self, session: ResearchSession, **kwargs) -> None:
         """
@@ -26,3 +32,18 @@ class BaseAgent(ABC):
         Raises exceptions on failure, which the orchestrator should catch and handle.
         """
         pass
+
+    def record_stage(self, session: ResearchSession, stage_name: str, result: StageResult,
+                     warning: str = ""):
+        """Record a stage result on the session for quality tracking."""
+        session.stage_results[stage_name] = result.value
+        if result == StageResult.FAILED:
+            if session.quality_state == "complete":
+                session.quality_state = "degraded"
+            if warning:
+                session.quality_warnings.append(warning)
+        elif result == StageResult.PARTIAL:
+            if session.quality_state == "complete":
+                session.quality_state = "degraded"
+            if warning:
+                session.quality_warnings.append(warning)

@@ -103,6 +103,14 @@ class AgentStatus(str, Enum):
     SKIPPED = "skipped"
 
 
+class StageResult(str, Enum):
+    """Outcome of a pipeline stage — used to track degradation."""
+    SUCCESS = "success"
+    PARTIAL = "partial"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+
+
 class ClaimPropagationType(str, Enum):
     """How a claim changed as it propagated through literature."""
     PRESERVED = "preserved"
@@ -122,6 +130,11 @@ class DeadEndStatus(str, Enum):
     SUPERSEDED = "superseded"
     UNRESOLVED = "unresolved"
     PROMISING_BUT_UNDERTESTED = "promising_but_undertested"
+    CONDITIONAL_FAILURE = "conditional_failure"
+    WEAK_UNDER_SPECIFIC_CONDITIONS = "weak_under_specific_conditions"
+    REPEATEDLY_UNDERPERFORMING = "repeatedly_underperforming"
+    REPRODUCIBILITY_FAILURE = "reproducibility_failure"
+    INSUFFICIENT_EVIDENCE = "insufficient_evidence"
 
 
 class GapDimension(str, Enum):
@@ -432,13 +445,17 @@ class ConsensusList(BaseModel):
 # ─── Dead-End Atlas ──────────────────────────────────────
 
 class DeadEnd(BaseModel):
-    """A research approach identified as a dead end."""
+    """A research approach identified as a dead end or conditional limitation."""
     id: str = Field(default_factory=new_id)
     approach: str
     description: str
     supporting_papers: list[str] = []  # paper IDs
     failure_evidence: list[str] = []
     failure_conditions: list[str] = []
+    task: str = ""  # specific task where failure was observed
+    dataset: str = ""  # dataset where failure was observed
+    metric: str = ""  # metric on which it failed
+    failure_reason: str = ""  # structured reason category
     attempt_count: int = 1
     success_conditions_if_any: list[str] = []
     confidence: EvidenceConfidence = EvidenceConfidence.MEDIUM
@@ -447,6 +464,15 @@ class DeadEnd(BaseModel):
 
 
 # ─── Reproducibility Profile ────────────────────────────
+
+class ReproducibilityBlocker(BaseModel):
+    """A concrete reproducibility blocker with severity and remediation."""
+    category: str  # MISSING_RANDOM_SEED, MISSING_DATA_SPLIT, CODE_UNAVAILABLE, etc.
+    severity: str = "medium"  # critical, high, medium, low
+    affected_component: str = ""  # which part of the experiment is affected
+    evidence: str = ""  # why we flagged this
+    recommended_remediation: str = ""
+
 
 class ReproducibilityProfile(BaseModel):
     """Reproducibility assessment for a paper or claim."""
@@ -467,6 +493,7 @@ class ReproducibilityProfile(BaseModel):
     experimental_protocol_documented: Availability = Availability.UNKNOWN
     completeness_score: float = 0.0  # deterministic from above
     missing_components: list[str] = []
+    blockers: list[ReproducibilityBlocker] = []  # structured blockers
     risk_factors: list[str] = []
     replication_risks: list[str] = []
     explanation: str = ""
@@ -724,6 +751,10 @@ class ResearchSession(BaseModel):
     agent_events: list[AgentEvent] = []
     run_stats: Optional[RunStats] = None
     stats: dict[str, Any] = Field(default_factory=dict)
+    # Stage result tracking — prevents silent degradation
+    stage_results: dict[str, str] = Field(default_factory=dict)  # stage_name -> StageResult.value
+    quality_state: str = "complete"  # complete, degraded, failed
+    quality_warnings: list[str] = []
     is_demo: bool = False
     iteration_count: int = 0
     max_iterations: int = 2
