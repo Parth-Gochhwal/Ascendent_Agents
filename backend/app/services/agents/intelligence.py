@@ -22,7 +22,7 @@ class IntelligenceAgent(BaseAgent):
         """
         if phase in ("pre_synthesis", "all"):
             # Citation Graph
-            session.citations = ri._build_citation_graph(session) if hasattr(ri, '_build_citation_graph') else self._build_citation_graph(session)
+            session.citations = ri.build_citation_graph(session)
             
             # Dead-End Atlas
             session.dead_ends = ri.detect_dead_ends(session)

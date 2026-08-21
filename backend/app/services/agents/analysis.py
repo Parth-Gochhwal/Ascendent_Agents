@@ -59,7 +59,7 @@ class AnalysisAgent(BaseAgent):
             abstract=paper.abstract or "No abstract available",
             full_text_section=f"FULL TEXT:\n{full_text}" if full_text else "Full text not available."
         )
-        analysis = await self.llm.structured_generate(prompt, PaperAnalysis, system_prompt=SYSTEM_PROMPT)
+        analysis = await self.llm.structured_generate(prompt, PaperAnalysis, system_prompt=SYSTEM_PROMPT, use_fast=True)
         analysis.paper_id = paper.id
 
         # Extract claims
@@ -70,7 +70,7 @@ class AnalysisAgent(BaseAgent):
         )
 
         try:
-            claims_result = await self.llm.structured_generate(claims_prompt, ClaimList, system_prompt=SYSTEM_PROMPT)
+            claims_result = await self.llm.structured_generate(claims_prompt, ClaimList, system_prompt=SYSTEM_PROMPT, use_fast=True)
             for claim in claims_result.claims:
                 claim.paper_id = paper.id
             analysis.claims = claims_result.claims
@@ -84,10 +84,11 @@ class AnalysisAgent(BaseAgent):
             methods_section=paper.sections.get("methods", "Methods section not available")
         )
         try:
-            method = await self.llm.structured_generate(method_prompt, MethodPipeline, system_prompt=SYSTEM_PROMPT)
+            method = await self.llm.structured_generate(method_prompt, MethodPipeline, system_prompt=SYSTEM_PROMPT, use_fast=True)
             method.paper_id = paper.id
             analysis.methods = [method]
         except Exception as e:
             logger.warning(f"Method extraction failed for {paper.title[:40]}: {e}")
 
         return analysis
+

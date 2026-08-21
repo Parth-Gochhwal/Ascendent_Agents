@@ -24,13 +24,15 @@ class LLMProvider(ABC):
     """Abstract LLM provider interface."""
 
     @abstractmethod
-    async def generate(self, prompt: str, system_prompt: str = "", temperature: float = 0.3) -> str:
+    async def generate(self, prompt: str, system_prompt: str = "",
+                       temperature: float = 0.3, use_fast: bool = False) -> str:
         """Generate text completion."""
         ...
 
     @abstractmethod
     async def structured_generate(self, prompt: str, response_model: Type[T],
-                                   system_prompt: str = "", temperature: float = 0.1) -> T:
+                                   system_prompt: str = "", temperature: float = 0.1,
+                                   use_fast: bool = False) -> T:
         """Generate structured output parsed into a Pydantic model."""
         ...
 
@@ -87,18 +89,26 @@ class RateLimiter:
         self.tokens.append(time.time())
 
 
+import random
+
 class GeminiProvider(LLMProvider):
-    """Google Gemini LLM provider."""
+    """Google Gemini LLM provider with semantic model routing and robust fault tolerance."""
 
     def __init__(self):
         settings = get_settings()
         self.api_key = settings.gemini_api_key
-        self.model = settings.gemini_model
+        # Resolve reasoning model (legacy gemini_model takes precedence if explicitly passed)
+        self.reasoning_model = settings.gemini_model or settings.gemini_reasoning_model
         self.fast_model = settings.gemini_fast_model
         self.cache = LLMCache(settings.cache_dir)
         self.rate_limiter = RateLimiter(settings.llm_rate_limit_per_minute)
         self.semaphore = asyncio.Semaphore(settings.max_concurrent_llm_calls)
         self._client = None
+
+    @property
+    def model(self) -> str:
+        """Default reasoning model name."""
+        return self.reasoning_model
 
     def _get_client(self):
         if self._client is None:
@@ -114,10 +124,10 @@ class GeminiProvider(LLMProvider):
                        temperature: float = 0.3, use_fast: bool = False,
                        response_mime_type: Optional[str] = None,
                        response_schema: Optional[Any] = None) -> str:
-        model = self.fast_model if use_fast else self.model
+        target_model = self.fast_model if use_fast else self.reasoning_model
 
         # Check cache
-        cached = self.cache.get(prompt, system_prompt, model)
+        cached = self.cache.get(prompt, system_prompt, target_model)
         if cached:
             return cached
 
@@ -134,28 +144,35 @@ class GeminiProvider(LLMProvider):
             config_kwargs["response_mime_type"] = response_mime_type
         if response_schema:
             config_kwargs["response_schema"] = response_schema
-            
+
         config = types.GenerateContentConfig(**config_kwargs)
 
-        for attempt in range(3):
+        max_attempts = 3
+        for attempt in range(max_attempts):
             try:
                 async with self.semaphore:
                     response = await asyncio.to_thread(
                         client.models.generate_content,
-                        model=model,
+                        model=target_model,
                         contents=prompt,
                         config=config,
                     )
                 text = response.text or ""
-                self.cache.set(prompt, system_prompt, model, text)
+                self.cache.set(prompt, system_prompt, target_model, text)
                 return text
             except Exception as e:
-                if attempt < 2:
-                    wait = (2 ** attempt) * 2
-                    logger.warning(f"Gemini API error (attempt {attempt + 1}): {e}, retrying in {wait}s")
+                err_str = str(e).lower()
+                is_rate_limit = "429" in err_str or "resource_exhausted" in err_str or "quota" in err_str
+                if attempt < max_attempts - 1:
+                    base_wait = (2 ** attempt) * 2
+                    jitter = random.uniform(0.5, 1.5)
+                    wait = base_wait + jitter + (5.0 if is_rate_limit else 0.0)
+                    logger.warning(
+                        f"Gemini API error (model={target_model}, attempt {attempt + 1}/{max_attempts}, rate_limited={is_rate_limit}): {e}. Retrying in {wait:.1f}s"
+                    )
                     await asyncio.sleep(wait)
                 else:
-                    logger.error(f"Gemini API failed after 3 attempts: {e}")
+                    logger.error(f"Gemini API failed after {max_attempts} attempts on model {target_model}: {e}")
                     raise
 
     async def structured_generate(self, prompt: str, response_model: Type[T],
@@ -222,11 +239,13 @@ class GeminiProvider(LLMProvider):
 class DemoLLMProvider(LLMProvider):
     """Demo LLM provider that returns pre-configured responses."""
 
-    async def generate(self, prompt: str, system_prompt: str = "", temperature: float = 0.3) -> str:
+    async def generate(self, prompt: str, system_prompt: str = "",
+                       temperature: float = 0.3, use_fast: bool = False) -> str:
         return '{"status": "demo_mode"}'
 
     async def structured_generate(self, prompt: str, response_model: Type[T],
-                                   system_prompt: str = "", temperature: float = 0.1) -> T:
+                                   system_prompt: str = "", temperature: float = 0.1,
+                                   use_fast: bool = False) -> T:
         # Return default instance
         return response_model()
 

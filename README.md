@@ -131,13 +131,14 @@ D:/Ascendent_Agents/
 |----------|-------------|---------|
 | `DEMO_MODE` | Use synthetic corpus | `true` |
 | `GEMINI_API_KEY` | Google Gemini API key | - |
-| `GEMINI_MODEL` | Primary model | `gemini-2.0-flash` |
-| `GEMINI_FAST_MODEL` | Fast/cheap model | `gemini-2.0-flash-lite` |
+| `GEMINI_REASONING_MODEL` | Reasoning model (synthesis, novelty, red-team) | `gemini-2.5-pro` |
+| `GEMINI_FAST_MODEL` | Fast model (triage, extraction, parsing) | `gemini-2.5-flash` |
+| `GEMINI_MODEL` | Legacy model alias | `gemini-2.5-pro` |
 | `OPENALEX_EMAIL` | OpenAlex polite pool | - |
 | `SEMANTIC_SCHOLAR_API_KEY` | S2 API key | - |
 | `CROSSREF_EMAIL` | Crossref polite pool | - |
 | `MAX_PAPERS_DEEP_ANALYSIS` | Max papers for deep analysis | `15` |
-| `LLM_RATE_LIMIT_PER_MINUTE` | LLM rate limit | `30` |
+| `LLM_RATE_LIMIT_PER_MINUTE` | LLM rate limit (RPM) | `15` |
 
 ## 🧪 Testing
 

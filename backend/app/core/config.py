@@ -9,10 +9,24 @@ from pydantic import Field
 class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
 
-    # Gemini API
+    # Gemini API / Model Routing
     gemini_api_key: str = Field(default="", description="Google Gemini API key")
-    gemini_model: str = Field(default="gemini-2.0-flash", description="Primary Gemini model")
-    gemini_fast_model: str = Field(default="gemini-2.0-flash-lite", description="Fast/cheap Gemini model")
+    gemini_reasoning_model: str = Field(
+        default="gemini-2.5-pro",
+        description="Reasoning Gemini model for planning, synthesis, novelty, and red-team",
+        validation_alias="GEMINI_REASONING_MODEL"
+    )
+    gemini_fast_model: str = Field(
+        default="gemini-2.5-flash",
+        description="Fast Gemini model for triage, extraction, and candidate generation",
+        validation_alias="GEMINI_FAST_MODEL"
+    )
+    # Legacy alias support
+    gemini_model: Optional[str] = Field(
+        default=None,
+        description="Legacy model alias (falls back to reasoning model if set)",
+        validation_alias="GEMINI_MODEL"
+    )
 
     # Embedding
     embedding_model: str = Field(default="all-MiniLM-L6-v2", description="Sentence transformer model")

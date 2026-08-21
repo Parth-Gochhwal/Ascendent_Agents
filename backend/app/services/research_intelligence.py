@@ -33,6 +33,66 @@ from backend.app.models.research import (
 logger = logging.getLogger(__name__)
 
 
+# ─── Citation Graph Builder ───────────────────────────────
+
+def build_citation_graph(session: ResearchSession) -> list[CitationEdge]:
+    """Build the citation relationship graph across session papers.
+    
+    Combines verified provider reference/citation metadata with deterministic
+    textual reference matching. Mark verified vs inferred provenance explicitly.
+    """
+    edges: list[CitationEdge] = []
+    seen_pairs: set[tuple[str, str]] = set()
+
+    def normalize_title(title: str) -> str:
+        t = title.lower().strip()
+        t = re.sub(r'[^\w\s]', '', t)
+        t = re.sub(r'\s+', ' ', t)
+        return t
+
+    # Lookup tables
+    paper_titles = {normalize_title(p.title): p.id for p in session.papers.values() if p.title}
+    paper_dois = {p.doi.lower().strip(): p.id for p in session.papers.values() if p.doi}
+
+    # 1. Inspect each paper for citations
+    for source_id, paper in session.papers.items():
+        # A) Explicit provider metadata (e.g., sections, references or source_ids)
+        if paper.sections:
+            ref_section = paper.sections.get("references", "") or paper.sections.get("bibliography", "")
+            if ref_section:
+                # Check for DOI mentions in references
+                for doi_str, target_id in paper_dois.items():
+                    if target_id != source_id and (source_id, target_id) not in seen_pairs:
+                        if doi_str in ref_section.lower():
+                            seen_pairs.add((source_id, target_id))
+                            edges.append(CitationEdge(
+                                source_paper_id=source_id,
+                                target_paper_id=target_id,
+                                relation=CitationRelation.CITES,
+                                context=f"Verified DOI reference ({doi_str}) in references section",
+                                is_inferred=False,
+                            ))
+
+        # B) Deterministic textual title matching across abstracts and full-text sections
+        searchable_text = (paper.abstract or "").lower()
+        if paper.sections:
+            searchable_text += " " + " ".join(paper.sections.values()).lower()
+
+        for norm_title, target_id in paper_titles.items():
+            if target_id != source_id and len(norm_title) > 12 and (source_id, target_id) not in seen_pairs:
+                if norm_title in searchable_text:
+                    seen_pairs.add((source_id, target_id))
+                    edges.append(CitationEdge(
+                        source_paper_id=source_id,
+                        target_paper_id=target_id,
+                        relation=CitationRelation.CITES,
+                        context=f"Inferred citation via title mention '{norm_title[:40]}...'",
+                        is_inferred=True,
+                    ))
+
+    return edges
+
+
 # ─── Citation Echo Detection ─────────────────────────────
 
 def detect_citation_echoes(session: ResearchSession) -> list[CitationEchoCluster]:
@@ -317,18 +377,25 @@ def _contradiction_likelihood_score(c1: Claim, c2: Claim, papers: dict[str, Pape
         ("outperform", "underperform"), ("better", "worse"), ("superior", "inferior"),
         ("improve", "degrade"), ("increase", "decrease"), ("higher", "lower"),
         ("not justified", "justified"), ("fails", "succeeds"),
+        ("matches", "degrades"), ("matches", "suffers"), ("matches", "underperforms"),
+        ("effective", "ineffective"), ("accurate", "inaccurate"), ("optimal", "suboptimal"),
+        ("viable", "unviable"), ("scalable", "unscalable"), ("sufficient", "insufficient"),
     ]
     for pos, neg in opposing_pairs:
         if (pos in s1 and neg in s2) or (neg in s1 and pos in s2):
-            score += 0.3
+            score += 0.35
             break
 
-    # Overlapping methods/architectures mentioned
-    method_keywords = {"gnn", "gan", "lstm", "gru", "transformer", "cnn", "gat", "gcn", "mlp"}
-    m1 = set(w for w in s1.split() if w in method_keywords)
-    m2 = set(w for w in s2.split() if w in method_keywords)
+    # Overlapping methods/architectures/concepts mentioned
+    method_keywords = {
+        "gnn", "gan", "lstm", "gru", "transformer", "cnn", "gat", "gcn", "mlp",
+        "attention", "linear", "sparse", "dense", "recurrent", "mamba", "ssm",
+        "diffusion", "vae", "bert", "gpt", "llm", "lora", "adapter", "moe"
+    }
+    m1 = set(w for w in re.sub(r'[^\w\s]', '', s1).split() if w in method_keywords)
+    m2 = set(w for w in re.sub(r'[^\w\s]', '', s2).split() if w in method_keywords)
     if m1 & m2:
-        score += 0.2
+        score += 0.25
 
     return min(score, 1.0)
 

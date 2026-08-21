@@ -414,7 +414,7 @@ class ConsensusFinding(BaseModel):
     """A finding with consensus status."""
     id: str = Field(default_factory=new_id)
     statement: str
-    status: ConsensusStatus
+    status: ConsensusStatus = ConsensusStatus.UNCERTAIN
     supporting_paper_ids: list[str] = []
     supporting_evidence: list[str] = []
     dissenting_paper_ids: list[str] = []
@@ -596,7 +596,7 @@ class RedTeamFinding(BaseModel):
 class RedTeamResult(BaseModel):
     """Red team analysis result."""
     id: str = Field(default_factory=new_id)
-    conclusion_challenged: str
+    conclusion_challenged: str = ""
     challenges: list[str] = []
     findings: list[RedTeamFinding] = []
     weak_evidence: list[str] = []
