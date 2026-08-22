@@ -91,6 +91,27 @@ class RateLimiter:
 
 import random
 
+def _sanitize_gemini_schema(schema: Any) -> Any:
+    """
+    Recursively sanitizes JSON schemas for Gemini Developer API compatibility.
+    Strips unsupported fields such as 'additionalProperties' and 'additional_properties'
+    which cause Developer API errors on models containing open dictionaries or nested schemas.
+    """
+    if isinstance(schema, type) and issubclass(schema, BaseModel):
+        schema = schema.model_json_schema()
+
+    if isinstance(schema, dict):
+        cleaned: dict[str, Any] = {}
+        for k, v in schema.items():
+            if k in ("additionalProperties", "additional_properties"):
+                continue
+            cleaned[k] = _sanitize_gemini_schema(v)
+        return cleaned
+    elif isinstance(schema, list):
+        return [_sanitize_gemini_schema(item) for item in schema]
+    return schema
+
+
 class GeminiProvider(LLMProvider):
     """Google Gemini LLM provider with semantic model routing and robust fault tolerance."""
 
@@ -140,11 +161,12 @@ class GeminiProvider(LLMProvider):
 
         config_kwargs: dict[str, Any] = {
             "system_instruction": system_prompt if system_prompt else None,
+            "automatic_function_calling": types.AutomaticFunctionCallingConfig(disable=True),
         }
         if response_mime_type:
             config_kwargs["response_mime_type"] = response_mime_type
-        if response_schema:
-            config_kwargs["response_schema"] = response_schema
+        if response_schema is not None:
+            config_kwargs["response_schema"] = _sanitize_gemini_schema(response_schema)
 
         # Gemini 3.x and reasoning models (3.7-flash, 3.5-flash-lite) deprecate explicit sampling params
         # (temperature, top_p, top_k) in favor of native reasoning calibration.
@@ -157,7 +179,7 @@ class GeminiProvider(LLMProvider):
 
         config = types.GenerateContentConfig(**config_kwargs)
 
-        max_attempts = 3
+        max_attempts = 4
         for attempt in range(max_attempts):
             try:
                 async with self.semaphore:
@@ -174,14 +196,31 @@ class GeminiProvider(LLMProvider):
                 err_str = str(e).lower()
                 is_rate_limit = "429" in err_str or "resource_exhausted" in err_str or "quota" in err_str
                 if attempt < max_attempts - 1:
-                    base_wait = (2 ** attempt) * 2
-                    jitter = random.uniform(0.5, 1.5)
-                    wait = base_wait + jitter + (5.0 if is_rate_limit else 0.0)
+                    jitter = random.uniform(0.5, 2.0)
+                    if is_rate_limit:
+                        wait = 20.0 + (10.0 * attempt) + jitter
+                    else:
+                        wait = ((2 ** attempt) * 2) + jitter
                     logger.warning(
                         f"Gemini API error (model={target_model}, attempt {attempt + 1}/{max_attempts}, rate_limited={is_rate_limit}): {e}. Retrying in {wait:.1f}s"
                     )
                     await asyncio.sleep(wait)
                 else:
+                    if target_model != self.fast_model and ("503" in err_str or "unavailable" in err_str or "high demand" in err_str):
+                        logger.warning(f"Reasoning model {target_model} 503 unavailable, falling back to {self.fast_model}...")
+                        try:
+                            async with self.semaphore:
+                                response = await asyncio.to_thread(
+                                    client.models.generate_content,
+                                    model=self.fast_model,
+                                    contents=prompt,
+                                    config=config,
+                                )
+                            text = response.text or ""
+                            self.cache.set(prompt, system_prompt, target_model, text)
+                            return text
+                        except Exception as e2:
+                            logger.error(f"Fallback to fast model also failed: {e2}")
                     logger.error(f"Gemini API failed after {max_attempts} attempts on model {target_model}: {e}")
                     raise
 
@@ -236,11 +275,16 @@ class GeminiProvider(LLMProvider):
         if not self.api_key:
             return False
         try:
+            from google.genai import types
             client = self._get_client()
+            config = types.GenerateContentConfig(
+                automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True)
+            )
             response = await asyncio.to_thread(
                 client.models.generate_content,
                 model=self.fast_model,
                 contents="Say 'ok'",
+                config=config,
             )
             return bool(response.text)
         except Exception as e:
