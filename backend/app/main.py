@@ -41,3 +41,14 @@ app.add_middleware(
 )
 
 app.include_router(router, prefix="/api")
+
+
+@app.get("/health")
+async def root_health():
+    settings = get_settings()
+    return {
+        "status": "ok",
+        "demo_mode": settings.demo_mode,
+        "gemini_configured": bool(settings.gemini_api_key),
+        "app": "NEXUS - AI Research Scientist"
+    }
