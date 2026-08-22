@@ -33,6 +33,7 @@ class Settings(BaseSettings):
 
     # Academic APIs
     openalex_email: str = Field(default="", description="Email for OpenAlex polite pool")
+    openalex_api_key: str = Field(default="", description="OpenAlex API key (optional for higher rate limits)")
     semantic_scholar_api_key: str = Field(default="", description="Semantic Scholar API key")
     crossref_email: str = Field(default="", description="Email for Crossref polite pool")
 

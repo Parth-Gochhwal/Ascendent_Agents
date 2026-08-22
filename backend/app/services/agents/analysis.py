@@ -65,9 +65,25 @@ class AnalysisAgent(BaseAgent):
                               "Zero papers could be successfully analyzed")
 
     async def _analyze_paper(self, paper) -> PaperAnalysis:
-        full_text = ""
+        from backend.app.models.research import Evidence, EvidenceConfidence
+
+        # Build evidence-aware context from extracted sections
         if paper.sections:
-            full_text = "\n".join(f"## {k}\n{v}" for k, v in paper.sections.items())
+            priority_sections = ["methods", "methodology", "experimental_setup", "results", "discussion", "limitations", "conclusion"]
+            section_blocks = []
+            for sec in priority_sections:
+                if sec in paper.sections:
+                    title_display = sec.replace("_", " ").upper()
+                    section_blocks.append(f"### {title_display}\n{paper.sections[sec][:8000]}")
+            
+            # If no priority sections were detected, use general full_text slice
+            if not section_blocks and "full_text" in paper.sections:
+                section_blocks.append(f"### EXTRACTED TEXT\n{paper.sections['full_text'][:15000]}")
+
+            status_header = f"[FULL TEXT ANALYZED — {paper.page_count or 'N/A'} Pages]" if paper.full_text_available else "[PARTIAL TEXT]"
+            full_text = f"{status_header}\n\n" + "\n\n".join(section_blocks)
+        else:
+            full_text = "[ABSTRACT-ONLY ANALYSIS] Full text PDF was unavailable or not open access."
 
         prompt = PAPER_EXTRACTION_V1.format(
             title=paper.title,
@@ -75,7 +91,7 @@ class AnalysisAgent(BaseAgent):
             year=paper.year or "Unknown",
             venue=paper.venue or "Unknown",
             abstract=paper.abstract or "No abstract available",
-            full_text_section=f"FULL TEXT:\n{full_text}" if full_text else "Full text not available."
+            full_text_section=f"EXTRACTED CONTENT:\n{full_text}"
         )
         analysis = await self.llm.structured_generate(prompt, PaperAnalysis, system_prompt=SYSTEM_PROMPT, use_fast=True)
         analysis.paper_id = paper.id
@@ -91,15 +107,41 @@ class AnalysisAgent(BaseAgent):
             claims_result = await self.llm.structured_generate(claims_prompt, ClaimList, system_prompt=SYSTEM_PROMPT, use_fast=True)
             for claim in claims_result.claims:
                 claim.paper_id = paper.id
+                if not claim.source_section:
+                    claim.source_section = "Results / Findings" if paper.full_text_available else "Abstract"
             analysis.claims = claims_result.claims
         except Exception as e:
             logger.warning(f"Claim extraction failed for {paper.title[:40]}: {e}")
 
+        # Build grounded Evidence items for extracted claims to preserve provenance
+        analysis.evidence = []
+        for claim in analysis.claims:
+            loc = f"{paper.title} [{claim.source_section or ('Full Text' if paper.full_text_available else 'Abstract')}]"
+            ev = Evidence(
+                claim_id=claim.id,
+                paper_id=paper.id,
+                evidence_type="empirical" if (claim.evidence_value or claim.metric) else "observational",
+                description=f"{claim.statement}" + (f" ({claim.metric}: {claim.evidence_value})" if claim.evidence_value else ""),
+                quantitative_value=claim.evidence_value,
+                metric=claim.metric,
+                conditions=claim.conditions,
+                confidence=claim.confidence,
+                source_location=loc
+            )
+            analysis.evidence.append(ev)
+
         # Extract methods
+        methods_context = (
+            paper.sections.get("methods")
+            or paper.sections.get("methodology")
+            or paper.sections.get("experimental_setup")
+            or paper.abstract
+            or "Methods section not available"
+        )
         method_prompt = METHOD_EXTRACTION_V1.format(
             title=paper.title,
             abstract=paper.abstract or "",
-            methods_section=paper.sections.get("methods", "Methods section not available")
+            methods_section=methods_context[:10000]
         )
         try:
             method = await self.llm.structured_generate(method_prompt, MethodPipeline, system_prompt=SYSTEM_PROMPT, use_fast=True)

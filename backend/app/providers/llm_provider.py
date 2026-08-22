@@ -112,6 +112,8 @@ class GeminiProvider(LLMProvider):
 
     def _get_client(self):
         if self._client is None:
+            if not self.api_key:
+                raise ValueError("GEMINI_API_KEY is not configured in environment or .env file.")
             try:
                 from google import genai
                 self._client = genai.Client(api_key=self.api_key)
@@ -223,6 +225,8 @@ class GeminiProvider(LLMProvider):
                     raise ValueError(f"Could not parse LLM output into {response_model.__name__}: {e}")
 
     async def health_check(self) -> bool:
+        if not self.api_key:
+            return False
         try:
             client = self._get_client()
             response = await asyncio.to_thread(

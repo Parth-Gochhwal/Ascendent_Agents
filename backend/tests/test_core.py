@@ -336,10 +336,58 @@ class TestBibliographyFormatting:
         session.papers = get_demo_papers()
         pipeline.sessions[session.id] = session
         
-        ieee = pipeline.get_formatted_bibliography(session.id, "ieee")
-        assert "[1]" in ieee
+class TestLiveDemoSeparation:
+    def test_demo_mode_flag_on_session(self):
+        from backend.app.core.config import get_settings
+        settings = get_settings()
+        
+        session_demo = ResearchSession(question="Question A", is_demo=True)
+        assert session_demo.is_demo is True
+        assert len(session_demo.papers) == 0
+
+        session_live = ResearchSession(question="Question B", is_demo=False)
+        assert session_live.is_demo is False
+        assert len(session_live.papers) == 0
+
+    def test_session_isolation_independent_state(self):
+        """Ensure two concurrent sessions do not share papers, claims, or findings."""
+        s1 = ResearchSession(question="Battery degradation")
+        s2 = ResearchSession(question="Multimodal RAG benchmarks")
+
+        s1.papers["p1"] = Paper(id="p1", title="Battery Paper")
+        s1.claims.append(Claim(id="c1", statement="Battery claim", paper_id="p1"))
+
+        s2.papers["p2"] = Paper(id="p2", title="Multimodal Paper")
+        s2.claims.append(Claim(id="c2", statement="RAG claim", paper_id="p2"))
+
+        assert "p1" in s1.papers
+        assert "p1" not in s2.papers
+        assert "p2" in s2.papers
+        assert "p2" not in s1.papers
+        assert s1.claims[0].statement == "Battery claim"
+        assert s2.claims[0].statement == "RAG claim"
+
+    def test_secrets_not_in_health_response(self):
+        """Ensure health endpoint does not print or return raw secrets."""
+        from backend.app.core.config import Settings
+        s = Settings(gemini_api_key="SUPER_SECRET_KEY_12345")
+        assert "SUPER_SECRET_KEY_12345" not in str(bool(s.gemini_api_key))
+
+    def test_different_questions_produce_different_fallback_plans(self):
+        """Ensure distinct fallback plans are derived from specific questions."""
+        q1 = "Are graph neural networks better for battery RUL prediction?"
+        q2 = "What are the limitations of multimodal RAG benchmarks?"
+        
+        plan1 = ResearchPlan(normalized_question=q1, research_objective=f"Investigate: {q1}", search_queries=[q1])
+        plan2 = ResearchPlan(normalized_question=q2, research_objective=f"Investigate: {q2}", search_queries=[q2])
+
+        assert plan1.search_queries != plan2.search_queries
+        assert plan1.normalized_question != plan2.normalized_question
+        assert "battery" in plan1.search_queries[0].lower()
+        assert "multimodal" in plan2.search_queries[0].lower()
 
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
 

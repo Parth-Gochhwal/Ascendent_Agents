@@ -41,20 +41,20 @@ class RetrievalAgent(BaseAgent):
 
         all_papers = []
         failed_providers = []
-        for query in queries:
-            for provider in self.providers:
-                try:
-                    results = await provider.search(query, max_results=15)
-                    all_papers.extend(results)
+        for query in queries[:4]:
+            tasks = [provider.search(query, max_results=10) for provider in self.providers]
+            results_lists = await asyncio.gather(*tasks, return_exceptions=True)
+            for provider, res in zip(self.providers, results_lists):
+                if isinstance(res, Exception):
+                    logger.warning(f"Search failed ({provider.provider_name}): {res}")
+                    failed_providers.append(f"{provider.provider_name}: {res}")
+                elif isinstance(res, list):
+                    all_papers.extend(res)
                     session.searches.append(SearchResult(
                         query=query, provider=provider.provider_name,
-                        papers_found=len(results),
-                        paper_ids=[p.id for p in results]
+                        papers_found=len(res),
+                        paper_ids=[p.id for p in res]
                     ))
-                except Exception as e:
-                    logger.warning(f"Search failed ({provider.provider_name}): {e}")
-                    failed_providers.append(f"{provider.provider_name}: {e}")
-            await asyncio.sleep(0.5)  # Rate limiting between queries
 
         # Deduplicate
         deduped = self._deduplicate_papers(all_papers)
@@ -64,15 +64,25 @@ class RetrievalAgent(BaseAgent):
         
         # Select top N
         selected = ranked[:self.max_papers]
-        for p in selected:
+        
+        # Enrich selected papers with Open-Access Full Text
+        from backend.app.services.full_text import get_full_text_retriever
+        retriever = get_full_text_retriever()
+        enriched_selected = await retriever.enrich_papers_batch(selected)
+        
+        for p in enriched_selected:
             session.papers[p.id] = p
             
+        full_text_count = sum(1 for p in enriched_selected if p.full_text_available)
+        abstract_only_count = sum(1 for p in enriched_selected if not p.full_text_available)
+        logger.info(f"Retrieval complete: {len(enriched_selected)} papers selected ({full_text_count} full-text, {abstract_only_count} abstract-only)")
+
         if len(selected) == 0:
             self.record_stage(session, "retrieval", StageResult.FAILED,
                               "No papers retrieved from academic providers — downstream analysis cannot proceed")
         elif failed_providers:
             self.record_stage(session, "retrieval", StageResult.PARTIAL,
-                              f"Retrieved {len(selected)} papers, but some searches failed ({', '.join(failed_providers[:2])})")
+                              f"Retrieved {len(selected)} papers ({full_text_count} full text), but some searches failed ({', '.join(failed_providers[:2])})")
         else:
             self.record_stage(session, "retrieval", StageResult.SUCCESS)
 

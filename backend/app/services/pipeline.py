@@ -58,7 +58,7 @@ class ResearchPipeline:
         self.providers = []
         if not self.settings.demo_mode:
             self.providers = [
-                OpenAlexProvider(email=self.settings.openalex_email),
+                OpenAlexProvider(email=self.settings.openalex_email, api_key=self.settings.openalex_api_key),
                 SemanticScholarProvider(api_key=self.settings.semantic_scholar_api_key),
                 CrossrefProvider(email=self.settings.crossref_email),
                 ArxivProvider(),
@@ -1006,7 +1006,7 @@ class ResearchPipeline:
         text = ""
         sections: dict[str, str] = {}
         try:
-            import fitz
+            import pymupdf as fitz
             doc = fitz.open(upload_path)
             pages_text = [page.get_text() for page in doc]
             text = "\n".join(pages_text)

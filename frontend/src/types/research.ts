@@ -111,6 +111,13 @@ export type ClaimPropagationType =
   | 'contradicted'
   | 'unsupported_extension';
 
+export type PaperContentStatus =
+  | 'METADATA_ONLY'
+  | 'ABSTRACT_ONLY'
+  | 'FULL_TEXT'
+  | 'FULL_TEXT_PARTIAL'
+  | 'FULL_TEXT_FAILED';
+
 export interface Author {
   name: string;
   affiliation?: string;
@@ -130,9 +137,15 @@ export interface Paper {
   source_provider?: string;
   source_ids?: Record<string, string>;
   full_text_available?: boolean;
+  content_status?: PaperContentStatus;
   pdf_url?: string;
   open_access?: boolean;
+  oa_status?: string;
   sections?: Record<string, string>;
+  page_count?: number;
+  text_length?: number;
+  extraction_status?: string;
+  retrieval_failure_reason?: string;
   relevance_score?: number;
   evidence_quality?: number;
   research_score?: number;

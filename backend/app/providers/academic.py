@@ -34,13 +34,14 @@ class AcademicSearchProvider(ABC):
 
 
 class OpenAlexProvider(AcademicSearchProvider):
-    """OpenAlex API provider — free, no key required."""
+    """OpenAlex API provider — free, with optional API key for higher rate limits."""
 
     BASE_URL = "https://api.openalex.org"
 
-    def __init__(self, email: str = ""):
+    def __init__(self, email: str = "", api_key: str = ""):
         self.email = email
-        self._client = httpx.AsyncClient(timeout=30.0)
+        self.api_key = api_key
+        self._client = httpx.AsyncClient(timeout=30.0, follow_redirects=True)
 
     @property
     def provider_name(self) -> str:
@@ -50,6 +51,8 @@ class OpenAlexProvider(AcademicSearchProvider):
         params = {}
         if self.email:
             params["mailto"] = self.email
+        if self.api_key:
+            params["api_key"] = self.api_key
         return params
 
     def _parse_paper(self, work: dict) -> Paper:
@@ -69,6 +72,18 @@ class OpenAlexProvider(AcademicSearchProvider):
             doi = doi[16:]
 
         oa = work.get("open_access", {})
+        pdf_url = (
+            oa.get("oa_url")
+            or work.get("primary_location", {}).get("pdf_url")
+            or (work.get("best_oa_location") or {}).get("pdf_url")
+        )
+        is_oa = bool(oa.get("is_oa") or pdf_url)
+        abstract = self._reconstruct_abstract(work.get("abstract_inverted_index"))
+
+        from backend.app.models.research import PaperContentStatus
+        initial_status = (
+            PaperContentStatus.ABSTRACT_ONLY if abstract else PaperContentStatus.METADATA_ONLY
+        )
 
         return Paper(
             title=work.get("display_name", work.get("title", "Unknown")),
@@ -77,12 +92,13 @@ class OpenAlexProvider(AcademicSearchProvider):
             venue=work.get("primary_location", {}).get("source", {}).get("display_name") if work.get("primary_location") else None,
             doi=doi or None,
             url=work.get("doi") or work.get("id"),
-            abstract=self._reconstruct_abstract(work.get("abstract_inverted_index")),
+            abstract=abstract,
             citation_count=work.get("cited_by_count", 0),
             source_provider=self.provider_name,
             source_ids={"openalex": work.get("id", "")},
-            open_access=oa.get("is_oa", False),
-            pdf_url=oa.get("oa_url"),
+            open_access=is_oa,
+            pdf_url=pdf_url,
+            content_status=initial_status,
         )
 
     def _reconstruct_abstract(self, inverted_index: Optional[dict]) -> Optional[str]:
@@ -96,11 +112,13 @@ class OpenAlexProvider(AcademicSearchProvider):
         return " ".join(w for _, w in word_positions) if word_positions else None
 
     async def search(self, query: str, max_results: int = 25) -> list[Paper]:
+        clean_query = re.sub(r'[?#<>\r\n]+', ' ', query).strip()
+        if not clean_query:
+            return []
         params = self._params()
         params.update({
-            "search": query,
+            "search": clean_query,
             "per_page": min(max_results, 50),
-            "sort": "relevance_score:desc",
             "select": "id,display_name,title,authorships,publication_year,doi,cited_by_count,primary_location,open_access,abstract_inverted_index",
         })
         try:
@@ -134,7 +152,7 @@ class SemanticScholarProvider(AcademicSearchProvider):
         headers = {}
         if api_key:
             headers["x-api-key"] = api_key
-        self._client = httpx.AsyncClient(timeout=30.0, headers=headers)
+        self._client = httpx.AsyncClient(timeout=30.0, headers=headers, follow_redirects=True)
 
     @property
     def provider_name(self) -> str:
@@ -147,6 +165,22 @@ class SemanticScholarProvider(AcademicSearchProvider):
         ]
         ext_ids = data.get("externalIds") or {}
         doi = ext_ids.get("DOI")
+        arxiv_id = ext_ids.get("ArXiv") or ext_ids.get("arXiv")
+        
+        pdf_url = data.get("openAccessPdf", {}).get("url") if data.get("openAccessPdf") else None
+        if not pdf_url and arxiv_id:
+            pdf_url = f"https://arxiv.org/pdf/{arxiv_id}.pdf"
+
+        source_ids = {"semantic_scholar": data.get("paperId", "")}
+        if arxiv_id:
+            source_ids["arxiv"] = arxiv_id
+
+        abstract = data.get("abstract")
+        from backend.app.models.research import PaperContentStatus
+        initial_status = (
+            PaperContentStatus.ABSTRACT_ONLY if abstract else PaperContentStatus.METADATA_ONLY
+        )
+
         return Paper(
             title=data.get("title", "Unknown"),
             authors=authors,
@@ -154,12 +188,13 @@ class SemanticScholarProvider(AcademicSearchProvider):
             venue=data.get("venue") or data.get("publicationVenue", {}).get("name") if data.get("publicationVenue") else data.get("venue"),
             doi=doi,
             url=data.get("url"),
-            abstract=data.get("abstract"),
+            abstract=abstract,
             citation_count=data.get("citationCount", 0),
             source_provider=self.provider_name,
-            source_ids={"semantic_scholar": data.get("paperId", "")},
-            open_access=data.get("isOpenAccess", False),
-            pdf_url=data.get("openAccessPdf", {}).get("url") if data.get("openAccessPdf") else None,
+            source_ids=source_ids,
+            open_access=bool(data.get("isOpenAccess") or pdf_url),
+            pdf_url=pdf_url,
+            content_status=initial_status,
         )
 
     async def search(self, query: str, max_results: int = 25) -> list[Paper]:
@@ -196,7 +231,7 @@ class CrossrefProvider(AcademicSearchProvider):
     def __init__(self, email: str = ""):
         self.email = email
         headers = {"User-Agent": f"NEXUS/1.0 (mailto:{email})" if email else "NEXUS/1.0"}
-        self._client = httpx.AsyncClient(timeout=30.0, headers=headers)
+        self._client = httpx.AsyncClient(timeout=30.0, headers=headers, follow_redirects=True)
 
     @property
     def provider_name(self) -> str:
@@ -222,6 +257,12 @@ class CrossrefProvider(AcademicSearchProvider):
         if item.get("container-title"):
             venue = item["container-title"][0] if item["container-title"] else None
 
+        abstract = self._clean_abstract(item.get("abstract", ""))
+        from backend.app.models.research import PaperContentStatus
+        initial_status = (
+            PaperContentStatus.ABSTRACT_ONLY if abstract else PaperContentStatus.METADATA_ONLY
+        )
+
         return Paper(
             title=title,
             authors=authors,
@@ -229,10 +270,11 @@ class CrossrefProvider(AcademicSearchProvider):
             venue=venue,
             doi=item.get("DOI"),
             url=item.get("URL"),
-            abstract=self._clean_abstract(item.get("abstract", "")),
+            abstract=abstract,
             citation_count=item.get("is-referenced-by-count", 0),
             source_provider=self.provider_name,
             source_ids={"crossref": item.get("DOI", "")},
+            content_status=initial_status,
         )
 
     def _clean_abstract(self, abstract: str) -> Optional[str]:
@@ -243,8 +285,11 @@ class CrossrefProvider(AcademicSearchProvider):
         return clean.strip() or None
 
     async def search(self, query: str, max_results: int = 25) -> list[Paper]:
+        clean_query = re.sub(r'[?#<>\r\n]+', ' ', query).strip()
+        if not clean_query:
+            return []
         params = {
-            "query": query,
+            "query": clean_query,
             "rows": min(max_results, 50),
             "sort": "relevance",
             "select": "DOI,title,author,published-print,published-online,container-title,abstract,is-referenced-by-count,URL",
@@ -273,17 +318,16 @@ class CrossrefProvider(AcademicSearchProvider):
 class ArxivProvider(AcademicSearchProvider):
     """arXiv API provider."""
 
-    BASE_URL = "http://export.arxiv.org/api/query"
+    BASE_URL = "https://export.arxiv.org/api/query"
 
     def __init__(self):
-        self._client = httpx.AsyncClient(timeout=30.0)
+        self._client = httpx.AsyncClient(timeout=30.0, follow_redirects=True)
 
     @property
     def provider_name(self) -> str:
         return "arxiv"
 
     def _parse_entry(self, entry: dict) -> Paper:
-        # arXiv API returns Atom XML, we parse the converted dict
         authors = []
         entry_authors = entry.get("authors", [])
         if isinstance(entry_authors, str):
@@ -306,6 +350,16 @@ class ArxivProvider(AcademicSearchProvider):
         if "arxiv.org/abs/" in arxiv_id:
             arxiv_id = arxiv_id.split("arxiv.org/abs/")[-1]
 
+        pdf_url = entry.get("pdf_url")
+        if not pdf_url and arxiv_id:
+            pdf_url = f"https://arxiv.org/pdf/{arxiv_id}.pdf"
+
+        abstract = entry.get("summary", "").replace("\n", " ").strip() or None
+        from backend.app.models.research import PaperContentStatus
+        initial_status = (
+            PaperContentStatus.ABSTRACT_ONLY if abstract else PaperContentStatus.METADATA_ONLY
+        )
+
         return Paper(
             title=entry.get("title", "Unknown").replace("\n", " ").strip(),
             authors=authors,
@@ -313,17 +367,21 @@ class ArxivProvider(AcademicSearchProvider):
             venue="arXiv",
             doi=entry.get("doi"),
             url=entry.get("id"),
-            abstract=entry.get("summary", "").replace("\n", " ").strip() or None,
+            abstract=abstract,
             source_provider=self.provider_name,
             source_ids={"arxiv": arxiv_id},
             open_access=True,
-            pdf_url=entry.get("pdf_url"),
+            pdf_url=pdf_url,
+            content_status=initial_status,
         )
 
     async def search(self, query: str, max_results: int = 25) -> list[Paper]:
         import xml.etree.ElementTree as ET
+        clean_query = re.sub(r'[?#<>\r\n]+', ' ', query).strip()
+        if not clean_query:
+            return []
         params = {
-            "search_query": f"all:{query}",
+            "search_query": f"all:{clean_query}",
             "start": 0,
             "max_results": min(max_results, 50),
             "sortBy": "relevance",

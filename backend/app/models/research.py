@@ -82,6 +82,14 @@ class Availability(str, Enum):
     UNKNOWN = "unknown"
 
 
+class PaperContentStatus(str, Enum):
+    METADATA_ONLY = "METADATA_ONLY"
+    ABSTRACT_ONLY = "ABSTRACT_ONLY"
+    FULL_TEXT = "FULL_TEXT"
+    FULL_TEXT_PARTIAL = "FULL_TEXT_PARTIAL"
+    FULL_TEXT_FAILED = "FULL_TEXT_FAILED"
+
+
 class CitationRelation(str, Enum):
     CITES = "cites"
     EXTENDS = "extends"
@@ -218,9 +226,15 @@ class Paper(BaseModel):
     source_provider: str = "unknown"
     source_ids: dict[str, str] = Field(default_factory=dict)  # provider -> id
     full_text_available: bool = False
+    content_status: PaperContentStatus = PaperContentStatus.METADATA_ONLY
     pdf_url: Optional[str] = None
     open_access: bool = False
+    oa_status: Optional[str] = None
     sections: dict[str, str] = Field(default_factory=dict)
+    page_count: Optional[int] = None
+    text_length: Optional[int] = None
+    extraction_status: Optional[str] = None
+    retrieval_failure_reason: Optional[str] = None
     relevance_score: Optional[float] = None
     evidence_quality: Optional[float] = None
     research_score: Optional[float] = None

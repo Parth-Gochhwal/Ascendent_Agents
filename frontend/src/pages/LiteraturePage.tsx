@@ -125,6 +125,18 @@ export function LiteraturePage({ sessionId, session, onWhy }: LiteraturePageProp
                 </span>
               </div>
             </div>
+            <div style={{ background: 'var(--bg-tertiary)', padding: 10, borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-primary)' }}>
+              <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-tertiary)' }}>ANALYSIS DEPTH</div>
+              <div style={{ marginTop: 6 }}>
+                <span className={`nexus-badge ${selectedPaper.full_text_available ? 'badge-high' : selectedPaper.content_status === 'FULL_TEXT_FAILED' ? 'badge-low' : 'badge-medium'}`}>
+                  {selectedPaper.full_text_available
+                    ? `FULL TEXT (${selectedPaper.page_count || 'N/A'} pp)`
+                    : selectedPaper.content_status === 'FULL_TEXT_FAILED'
+                    ? 'ABSTRACT (PDF fetch failed)'
+                    : 'ABSTRACT ONLY'}
+                </span>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -271,6 +283,11 @@ export function LiteraturePage({ sessionId, session, onWhy }: LiteraturePageProp
                     </span>
                   )}
                   {p.doi && <span className="doi-chip">DOI</span>}
+                  {p.full_text_available ? (
+                    <span className="nexus-badge badge-high" style={{ fontSize: 9, padding: '2px 6px' }}>FULL TEXT</span>
+                  ) : (
+                    <span className="nexus-badge badge-neutral" style={{ fontSize: 9, padding: '2px 6px' }}>ABSTRACT</span>
+                  )}
                 </div>
 
                 <WhyButton onClick={() => onWhy('paper', p.id)} />
