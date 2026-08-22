@@ -45,7 +45,7 @@ Open [http://localhost:5173](http://localhost:5173) in your browser. API docs ar
 
 ### 2. Live Academic Mode (`DEMO_MODE=false` in `.env`)
 - Executes live multi-provider discovery across **OpenAlex**, **Crossref**, **arXiv**, and **Semantic Scholar**.
-- Automatically fetches legitimate **Open-Access (OA) full-text PDFs** (arXiv, unpaywalled publishers), extracts text with **PyMuPDF**, detects scholarly sections (Methods, Results, Limitations), and grounds all extracted claims and evidence.
+- Automatically fetches legitimate **Open-Access (OA) full-text PDFs** (from provider-resolved arXiv, OpenAlex, Semantic Scholar, and Crossref OA links), extracts text with **PyMuPDF**, detects scholarly sections (Methods, Results, Limitations), and grounds all extracted claims and evidence.
 - Driven by **Google Gemini** (`gemini-3.7-flash` for reasoning, `gemini-3.5-flash-lite` for fast tasks).
 
 Configure `.env`:

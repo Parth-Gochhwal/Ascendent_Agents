@@ -138,14 +138,22 @@ class GeminiProvider(LLMProvider):
 
         from google.genai import types
 
-        config_kwargs = {
-            "temperature": temperature,
+        config_kwargs: dict[str, Any] = {
             "system_instruction": system_prompt if system_prompt else None,
         }
         if response_mime_type:
             config_kwargs["response_mime_type"] = response_mime_type
         if response_schema:
             config_kwargs["response_schema"] = response_schema
+
+        # Gemini 3.x and reasoning models (3.7-flash, 3.5-flash-lite) deprecate explicit sampling params
+        # (temperature, top_p, top_k) in favor of native reasoning calibration.
+        # Only supply temperature for legacy non-3.x models if explicitly configured.
+        is_gemini_3_or_thinking = any(
+            v in target_model.lower() for v in ["3.7", "3.5", "2.5", "gemini-3", "gemini-2.5", "thinking"]
+        )
+        if not is_gemini_3_or_thinking and temperature is not None:
+            config_kwargs["temperature"] = temperature
 
         config = types.GenerateContentConfig(**config_kwargs)
 

@@ -1,8 +1,8 @@
 """Open-Access Full-Text Retrieval and PDF Extraction Service for NEXUS.
 
-Retrieves legitimately available open-access PDFs (arXiv, OpenAlex, Semantic Scholar,
-and unpaywall endpoints), validates integrity, extracts text with PyMuPDF, detects
-scholarly sections, and maintains disk cache.
+Retrieves legitimately available open-access PDFs from academic provider metadata
+(arXiv, OpenAlex, Semantic Scholar, and Crossref), validates integrity, extracts
+text with PyMuPDF, detects scholarly sections, and maintains disk cache.
 """
 import asyncio
 import hashlib

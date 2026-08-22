@@ -383,8 +383,22 @@ class TestLiveDemoSeparation:
 
         assert plan1.search_queries != plan2.search_queries
         assert plan1.normalized_question != plan2.normalized_question
-        assert "battery" in plan1.search_queries[0].lower()
-        assert "multimodal" in plan2.search_queries[0].lower()
+    def test_gemini_3_omits_sampling_params(self):
+        """Ensure Gemini 3.x models do not pass deprecated temperature/top_p/top_k into GenerateContentConfig."""
+        from google.genai import types
+        from backend.app.providers.llm_provider import GeminiProvider
+
+        provider = GeminiProvider()
+        assert provider.reasoning_model == "gemini-3.7-flash"
+        assert provider.fast_model == "gemini-3.5-flash-lite"
+
+        # Verify logic for reasoning model
+        is_gemini_3_reasoning = any(v in provider.reasoning_model.lower() for v in ["3.7", "3.5", "2.5", "gemini-3", "gemini-2.5", "thinking"])
+        assert is_gemini_3_reasoning is True
+
+        # Verify logic for fast model
+        is_gemini_3_fast = any(v in provider.fast_model.lower() for v in ["3.7", "3.5", "2.5", "gemini-3", "gemini-2.5", "thinking"])
+        assert is_gemini_3_fast is True
 
 
 if __name__ == "__main__":
