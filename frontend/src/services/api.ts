@@ -1,47 +1,39 @@
-/** NEXUS API Client */
+/**
+ * NEXUS API Client
+ * Connects directly to FastAPI backend routes and WebSockets.
+ */
+import type {
+  ResearchSession,
+  Paper,
+  PaperAnalysis,
+  Claim,
+  Evidence,
+  Contradiction,
+  ConsensusFinding,
+  ResearchGap,
+  MissingExperiment,
+  NoveltyAssessment,
+  ExperimentProposal,
+  AuditResult,
+  RedTeamResult,
+  AgentEvent,
+  CitationEdge,
+  MethodPipeline,
+  WhyExplanation,
+  TimelineMilestone,
+  DeadEnd,
+  ReproducibilityProfile,
+  ClaimPropagation,
+  CitationEchoCluster,
+  ResearchGraph,
+} from '../types/research';
+
 const HOST = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
 const PROTOCOL = typeof window !== 'undefined' && window.location.protocol === 'https:' ? 'https:' : 'http:';
 const WS_PROTOCOL = PROTOCOL === 'https:' ? 'wss:' : 'ws:';
-const PORT = '8000'; // Fallback to local dev port
+const PORT = '8000';
 const API_BASE = (import.meta as any).env?.VITE_API_URL || `${PROTOCOL}//${HOST}:${PORT}/api`;
 const WS_BASE = (import.meta as any).env?.VITE_WS_URL || `${WS_PROTOCOL}//${HOST}:${PORT}/api`;
-
-export interface Paper {
-  id: string;
-  title: string;
-  authors: { name: string }[];
-  year: number;
-  venue: string;
-  abstract: string;
-  doi?: string;
-  research_score: number;
-  is_demo: boolean;
-}
-
-export interface Claim {
-  id: string;
-  paper_id: string;
-  statement: string;
-  confidence: string;
-}
-
-export interface AuditResult {
-  total_claims: number;
-  claims_with_evidence_links: number;
-  unsupported_claims: number;
-  identifiable_source_metadata: number;
-  citations_total: number;
-  bibliographic_metadata_complete: boolean;
-  overall_integrity: string;
-}
-
-export interface ResearchSession {
-  id: string;
-  status: string;
-  question: string;
-  is_demo: boolean;
-  stats: any;
-}
 
 async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
@@ -49,79 +41,135 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
     ...options,
   });
   if (!res.ok) {
-    throw new Error(`API Error ${res.status}: ${res.statusText}`);
+    let errorDetail = res.statusText;
+    try {
+      const errJson = await res.json();
+      if (errJson.detail) errorDetail = errJson.detail;
+    } catch {
+      // keep statusText
+    }
+    throw new Error(`API Error ${res.status}: ${errorDetail}`);
   }
   return res.json();
 }
 
 export const api = {
-  health: () => apiFetch<{ status: string; demo_mode: boolean }>('/health'),
+  health: () =>
+    apiFetch<{ status: string; demo_mode: boolean; gemini_configured: boolean; app: string }>('/health'),
 
   startResearch: (question: string) =>
-    apiFetch<{ id: string; status: string }>('/research/start', {
+    apiFetch<{ id: string; status: string; message: string }>('/research/start', {
       method: 'POST',
       body: JSON.stringify({ question }),
     }),
 
-  listSessions: () => apiFetch<{ sessions: any[] }>('/research/sessions'),
+  listSessions: () =>
+    apiFetch<{ sessions: Array<{ id: string; question: string; title: string; status: string; stats?: any; is_demo?: boolean; created_at?: string }> }>('/research/sessions'),
 
-  getSession: (id: string) => apiFetch<any>(`/research/session/${id}`),
+  getSession: (id: string) =>
+    apiFetch<ResearchSession>(`/research/session/${id}`),
 
-  getPapers: (id: string) => apiFetch<{ papers: any[] }>(`/research/session/${id}/papers`),
+  getPapers: (id: string) =>
+    apiFetch<{ papers: Paper[] }>(`/research/session/${id}/papers`),
 
   getPaperDetail: (sessionId: string, paperId: string) =>
-    apiFetch<{ paper: any; analysis: any }>(`/research/session/${sessionId}/paper/${paperId}`),
+    apiFetch<{ paper: Paper; analysis: PaperAnalysis | null }>(`/research/session/${sessionId}/paper/${paperId}`),
 
-  getClaims: (id: string) => apiFetch<{ claims: any[]; evidence: any[] }>(`/research/session/${id}/claims`),
+  getClaims: (id: string) =>
+    apiFetch<{ claims: Claim[]; evidence: Evidence[] }>(`/research/session/${id}/claims`),
 
   getContradictions: (id: string) =>
-    apiFetch<{ contradictions: any[] }>(`/research/session/${id}/contradictions`),
+    apiFetch<{ contradictions: Contradiction[] }>(`/research/session/${id}/contradictions`),
 
   getConsensus: (id: string) =>
-    apiFetch<{ consensus: any[] }>(`/research/session/${id}/consensus`),
+    apiFetch<{ consensus: ConsensusFinding[] }>(`/research/session/${id}/consensus`),
 
   getGaps: (id: string) =>
-    apiFetch<{ gaps: any[]; missing_experiments: any[] }>(`/research/session/${id}/gaps`),
+    apiFetch<{ gaps: ResearchGap[]; missing_experiments: MissingExperiment[] }>(`/research/session/${id}/gaps`),
 
-  getNovelty: (id: string) => apiFetch<{ novelty: any }>(`/research/session/${id}/novelty`),
+  getNovelty: (id: string) =>
+    apiFetch<{ novelty: NoveltyAssessment | null }>(`/research/session/${id}/novelty`),
 
   analyzeNovelty: (id: string, idea: string) =>
-    apiFetch<{ novelty: any }>(`/research/session/${id}/novelty`, {
+    apiFetch<{ novelty: NoveltyAssessment }>(`/research/session/${id}/novelty`, {
       method: 'POST',
       body: JSON.stringify({ idea }),
     }),
 
-  getExperiment: (id: string) => apiFetch<{ experiment: any }>(`/research/session/${id}/experiment`),
+  getExperiment: (id: string) =>
+    apiFetch<{ experiment: ExperimentProposal | null }>(`/research/session/${id}/experiment`),
 
   getAudit: (id: string) =>
-    apiFetch<{ audit: any; red_team: any }>(`/research/session/${id}/audit`),
+    apiFetch<{ audit: AuditResult | null; red_team: RedTeamResult | null }>(`/research/session/${id}/audit`),
 
-  getEvents: (id: string) => apiFetch<{ events: any[] }>(`/research/session/${id}/events`),
+  getEvents: (id: string) =>
+    apiFetch<{ events: AgentEvent[] }>(`/research/session/${id}/events`),
 
   getCitations: (id: string) =>
-    apiFetch<{ citations: any[]; papers: Record<string, any> }>(`/research/session/${id}/citations`),
+    apiFetch<{ citations: CitationEdge[]; papers: Record<string, { id: string; title: string; year?: number }> }>(
+      `/research/session/${id}/citations`
+    ),
 
-  getMethods: (id: string) => apiFetch<{ methods: any[] }>(`/research/session/${id}/methods`),
+  getMethods: (id: string) =>
+    apiFetch<{ methods: MethodPipeline[] }>(`/research/session/${id}/methods`),
 
-  getDossier: (id: string) => apiFetch<{ dossier: string; session: any }>(`/research/session/${id}/dossier`),
+  getDeadEnds: (id: string) =>
+    apiFetch<{ dead_ends: DeadEnd[]; count: number }>(`/research/session/${id}/dead-ends`),
 
-  getWhy: (sessionId: string, targetType: string, targetId: string) =>
-    apiFetch<{ explanation: any }>(`/research/session/${sessionId}/why?target_type=${encodeURIComponent(targetType)}&target_id=${encodeURIComponent(targetId)}`),
+  getReproducibility: (id: string) =>
+    apiFetch<{
+      profiles: Record<string, ReproducibilityProfile>;
+      count: number;
+      average_completeness: number;
+    }>(`/research/session/${id}/reproducibility`),
+
+  getClaimPropagations: (id: string) =>
+    apiFetch<{ propagations: ClaimPropagation[]; count: number; types: string[] }>(
+      `/research/session/${id}/claim-propagations`
+    ),
+
+  getCitationEchoes: (id: string) =>
+    apiFetch<{ echoes: CitationEchoCluster[]; count: number }>(`/research/session/${id}/citation-echoes`),
+
+  getEvidenceStrength: (id: string) =>
+    apiFetch<{ claims: Claim[] }>(`/research/session/${id}/evidence-strength`),
+
+  getResearchGraph: (id: string) =>
+    apiFetch<ResearchGraph>(`/research/session/${id}/research-graph`),
 
   getTimeline: (id: string) =>
-    apiFetch<{ milestones: any[] }>(`/research/session/${id}/timeline`),
+    apiFetch<{ milestones: TimelineMilestone[] }>(`/research/session/${id}/timeline`),
 
-  getBibliography: (id: string, style: string = 'apa') =>
-    apiFetch<{ style: string; formatted: string; papers: any[] }>(`/research/session/${id}/bibliography?style=${style}`),
+  getBibliography: (id: string, style: 'apa' | 'ieee' | 'bibtex' = 'apa') =>
+    apiFetch<{ style: string; formatted: string; papers: Paper[] }>(
+      `/research/session/${id}/bibliography?style=${style}`
+    ),
 
-  uploadPdf: async (sessionId: string, file: File) => {
+  getDossier: (id: string) =>
+    apiFetch<{ dossier: string; session: ResearchSession }>(`/research/session/${id}/dossier`),
+
+  getWhy: (sessionId: string, targetType: string, targetId: string) =>
+    apiFetch<{ explanation: WhyExplanation }>(
+      `/research/session/${sessionId}/why?target_type=${encodeURIComponent(targetType)}&target_id=${encodeURIComponent(targetId)}`
+    ),
+
+  uploadPdf: async (sessionId: string, file: File): Promise<{ paper: Paper; message: string }> => {
     const formData = new FormData();
     formData.append('file', file);
     const res = await fetch(`${API_BASE}/research/session/${sessionId}/upload-pdf`, {
       method: 'POST',
       body: formData,
     });
-    if (!res.ok) throw new Error(`Upload error ${res.status}: ${res.statusText}`);
+    if (!res.ok) {
+      let msg = res.statusText;
+      try {
+        const j = await res.json();
+        if (j.detail) msg = j.detail;
+      } catch {
+        // ignore
+      }
+      throw new Error(`Upload error ${res.status}: ${msg}`);
+    }
     return res.json();
   },
 
@@ -129,8 +177,7 @@ export const api = {
     apiFetch<{ demo_mode: boolean; message: string }>('/config/toggle-mode', { method: 'POST' }),
 };
 
-
-export function connectWebSocket(sessionId: string, onEvent: (event: any) => void): WebSocket {
+export function connectWebSocket(sessionId: string, onEvent: (event: AgentEvent) => void): WebSocket {
   const ws = new WebSocket(`${WS_BASE}/ws/research/${sessionId}`);
   ws.onmessage = (event) => {
     try {
